@@ -84,7 +84,7 @@ echo.
 :: ── Step 4: Install remaining dependencies ──
 echo [4/4] Installing remaining dependencies (%VENV_DIR%)...
 echo.
-call "%VENV_DIR%\Scripts\pip.exe" install yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai -q
+call "%VENV_DIR%\Scripts\pip.exe" install yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai curl_cffi -q
 if !ERRORLEVEL! NEQ 0 (
     echo [ERROR] Failed to install some dependencies.
     echo         Check your internet connection and try again.
@@ -98,7 +98,7 @@ echo ═════════════════════════
 echo  Verification
 echo ════════════════════════════════════════════════════
 echo.
-call "%VENV_DIR%\Scripts\python.exe" -c "import yt_dlp, google.genai, whisper, easyocr, PIL, moviepy, instaloader, requests, pandas, openpyxl, torch; print('✅ All %d packages imported successfully' % len(['yt_dlp','google.genai','whisper','easyocr','PIL','moviepy','instaloader','requests','pandas','openpyxl','torch']))" 2>&1
+call "%VENV_DIR%\Scripts\python.exe" -c "import yt_dlp, google.genai, whisper, easyocr, PIL, moviepy, instaloader, requests, pandas, openpyxl, torch, curl_cffi; print('✅ All %d packages imported successfully' % len(['yt_dlp','google.genai','whisper','easyocr','PIL','moviepy','instaloader','requests','pandas','openpyxl','torch','curl_cffi']))" 2>&1
 if %ERRORLEVEL% EQU 0 (
     echo.
     echo ╔══════════════════════════════════════════════════╗

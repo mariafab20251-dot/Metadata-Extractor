@@ -40,3 +40,7 @@ _backup_*/
 
 # Config files with secrets
 config.local.json
+cookies.txt
+debug_xiaohongshu.html
+debug_xiaohongshu.json
+debug_selenium.html

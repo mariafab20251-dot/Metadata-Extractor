@@ -1,0 +1,20 @@
+# Core dependencies
+yt-dlp>=2023.12.30
+openai-whisper>=20231117
+easyocr>=1.7.0
+Pillow>=10.0.0
+moviepy>=1.0.3
+instaloader>=4.10
+requests>=2.31.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# PornHub / impersonation support (required for sites that block bots)
+curl_cffi>=0.15.0
+
+# Gemini script generator
+google-genai>=2.0.0
+
+# PyTorch is installed SEPARATELY — use CPU-only index:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Do NOT pin exact version here (breaks on different Python/PyTorch versions).

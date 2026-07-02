@@ -1,0 +1,115 @@
+(async function () {
+    console.clear();
+    console.log('🎯 ULTIMATE Facebook Scraper - Get ALL Reels');
+    console.log('━'.repeat(70));
+
+    let allUrls = new Set();
+    const totalPasses = 5;
+    const scrollsPerPass = 150;
+
+    for (let pass = 1; pass <= totalPasses; pass++) {
+        console.log(`\n🔄 PASS ${pass}/${totalPasses}`);
+        console.log('─'.repeat(70));
+
+        window.scrollTo(0, 0);
+        await new Promise(r => setTimeout(r, 3000));
+
+        let scrollCount = 0;
+        let noNewCount = 0;
+        let lastSize = allUrls.size;
+
+        while (scrollCount < scrollsPerPass) {
+            scrollCount++;
+
+            window.scrollTo(0, document.body.scrollHeight);
+            await new Promise(r => setTimeout(r, 1500));
+
+            // Extract Facebook reel URLs (multiple patterns)
+            document.querySelectorAll('a[href*="/reel/"]').forEach(link => {
+                let match = link.href.match(/(https:\/\/www\.facebook\.com\/reel\/\d+)/);
+                if (match) allUrls.add(match[1]);
+            });
+
+            document.querySelectorAll('a[href*="/watch"]').forEach(link => {
+                if (link.href.includes('?v=')) {
+                    allUrls.add(link.href.split('&')[0]);
+                }
+            });
+
+            document.querySelectorAll('a[href*="/videos/"]').forEach(link => {
+                let match = link.href.match(/(https:\/\/www\.facebook\.com\/[^/]+\/videos\/\d+)/);
+                if (match) allUrls.add(match[1]);
+            });
+
+            const currentSize = allUrls.size;
+
+            if (currentSize === lastSize) {
+                noNewCount++;
+                if (noNewCount >= 15) {
+                    console.log(`  ✓ Pass ${pass} done: ${currentSize} total videos (stopped at scroll ${scrollCount})`);
+                    break;
+                }
+            } else {
+                const newVideos = currentSize - lastSize;
+                noNewCount = 0;
+                lastSize = currentSize;
+
+                if (scrollCount % 10 === 0) {
+                    console.log(`  📊 Scroll ${scrollCount}: ${currentSize} videos (+${newVideos} new)`);
+                }
+            }
+        }
+
+        console.log(`  📈 Pass ${pass} results: ${allUrls.size} total unique videos`);
+
+        if (pass < totalPasses) {
+            console.log(`  ⏳ Waiting 5 seconds before next pass...`);
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
+
+    const finalUrls = Array.from(allUrls).sort();
+
+    console.log('\n' + '='.repeat(70));
+    console.log('🎉 SCRAPING COMPLETE!');
+    console.log('='.repeat(70));
+    console.log(`📊 Total unique videos found: ${finalUrls.length}`);
+    console.log('💾 Downloading results file...');
+
+    // 🔥 Extract Facebook page name from URL
+    let pageName = 'facebook_reels';
+    
+    // Try to get page name from URL
+    const urlMatch = window.location.pathname.match(/\/([^/]+)\/?/);
+    if (urlMatch && urlMatch[1] && urlMatch[1] !== 'watch' && urlMatch[1] !== 'reel') {
+        pageName = urlMatch[1];
+    }
+    
+    // Try to get page name from page title
+    if (pageName === 'facebook_reels' && document.title) {
+        const titleMatch = document.title.split('|')[0].trim();
+        if (titleMatch && titleMatch !== 'Facebook') {
+            pageName = titleMatch.replace(/[^a-zA-Z0-9_-]/g, '_');
+        }
+    }
+
+    // Clean page name for filename
+    pageName = pageName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+
+    // 🔥 AUTO-DOWNLOAD TXT FILE
+    const blob = new Blob([finalUrls.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    a.href = url;
+    a.download = `${pageName}_reels_${timestamp}.txt`;
+
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    console.log(`💾 Saved as ${pageName}_reels_${timestamp}.txt`);
+    console.log(`📄 Page name: ${pageName}`);
+})();

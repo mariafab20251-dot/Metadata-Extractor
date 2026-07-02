@@ -1,0 +1,42 @@
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data files (user-generated, not source)
+data/
+models/
+channels/
+
+# Downloads & temp
+downloads/
+temp/
+*.tmp
+
+# Environment file
+.env
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Backups
+_backup_*/
+*.backup
+
+# Config files with secrets
+config.local.json

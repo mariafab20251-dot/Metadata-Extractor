@@ -1,0 +1,283 @@
+For Instagram
+
+
+(async function () {
+    console.clear();
+    console.log('🎯 ULTIMATE Instagram Scraper - Get ALL Videos');
+    console.log('━'.repeat(70));
+
+    let allUrls = new Set();
+    const totalPasses = 5;
+    const scrollsPerPass = 150;
+
+    for (let pass = 1; pass <= totalPasses; pass++) {
+        console.log(`\n🔄 PASS ${pass}/${totalPasses}`);
+        console.log('─'.repeat(70));
+
+        window.scrollTo(0, 0);
+        await new Promise(r => setTimeout(r, 3000));
+
+        let scrollCount = 0;
+        let noNewCount = 0;
+        let lastSize = allUrls.size;
+
+        while (scrollCount < scrollsPerPass) {
+            scrollCount++;
+
+            window.scrollTo(0, document.body.scrollHeight);
+            await new Promise(r => setTimeout(r, 1500));
+
+            document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]').forEach(link => {
+                allUrls.add(link.href);
+            });
+
+            const currentSize = allUrls.size;
+
+            if (currentSize === lastSize) {
+                noNewCount++;
+                if (noNewCount >= 15) {
+                    console.log(`  ✓ Pass ${pass} done: ${currentSize} total videos (stopped at scroll ${scrollCount})`);
+                    break;
+                }
+            } else {
+                const newVideos = currentSize - lastSize;
+                noNewCount = 0;
+                lastSize = currentSize;
+
+                if (scrollCount % 10 === 0) {
+                    console.log(`  📊 Scroll ${scrollCount}: ${currentSize} videos (+${newVideos} new)`);
+                }
+            }
+        }
+
+        console.log(`  📈 Pass ${pass} results: ${allUrls.size} total unique videos`);
+
+        if (pass < totalPasses) {
+            console.log(`  ⏳ Waiting 5 seconds before next pass...`);
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
+
+    const finalUrls = Array.from(allUrls).sort();
+
+    console.log('\n' + '='.repeat(70));
+    console.log('🎉 SCRAPING COMPLETE!');
+    console.log('='.repeat(70));
+    console.log(`📊 Total unique videos found: ${finalUrls.length}`);
+    console.log('💾 Downloading results file...');
+
+    // 🔥 Extract Instagram username from URL
+    let username = 'instagram_videos';
+    
+    // Try to get username from URL (instagram.com/username/)
+    const urlMatch = window.location.pathname.match(/\/([^/]+)\/?/);
+    if (urlMatch && urlMatch[1] && 
+        urlMatch[1] !== 'reels' && 
+        urlMatch[1] !== 'p' && 
+        urlMatch[1] !== 'reel' && 
+        urlMatch[1] !== 'explore') {
+        username = urlMatch[1];
+    }
+    
+    // Try to get username from page title (format: "Username (@username) • Instagram")
+    if (username === 'instagram_videos' && document.title) {
+        const titleMatch = document.title.match(/@([a-zA-Z0-9._]+)/);
+        if (titleMatch) {
+            username = titleMatch[1];
+        }
+    }
+
+    // Clean username for filename
+    username = username.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 50);
+
+    // 🔥 AUTO-DOWNLOAD TXT FILE
+    const blob = new Blob([finalUrls.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    a.href = url;
+    a.download = `${username}_videos_${timestamp}.txt`;
+
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    console.log(`💾 Saved as ${username}_videos_${timestamp}.txt`);
+    console.log(`📄 Username: ${username}`);
+})();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Option 2: Manual URL Collection (Immediate) 🚀
+If you can't wait, collect URLs manually:
+Open Instagram in your browser:
+Go to: https://www.instagram.com/drsadekai/
+Open developer tools (F12)
+Run this script in the console:
+
+
+
+
+(async function () {
+    console.clear();
+    console.log('🎯 ULTIMATE Instagram Scraper - Get ALL Videos');
+    console.log('━'.repeat(70));
+
+    let allUrls = new Set();
+    const totalPasses = 5;
+    const scrollsPerPass = 150;
+
+    for (let pass = 1; pass <= totalPasses; pass++) {
+        console.log(`\n🔄 PASS ${pass}/${totalPasses}`);
+        console.log('─'.repeat(70));
+
+        window.scrollTo(0, 0);
+        await new Promise(r => setTimeout(r, 3000));
+
+        let scrollCount = 0;
+        let noNewCount = 0;
+        let lastSize = allUrls.size;
+
+        while (scrollCount < scrollsPerPass) {
+            scrollCount++;
+
+            window.scrollTo(0, document.body.scrollHeight);
+            await new Promise(r => setTimeout(r, 1500));
+
+            document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]').forEach(link => {
+                allUrls.add(link.href);
+            });
+
+            const currentSize = allUrls.size;
+
+            if (currentSize === lastSize) {
+                noNewCount++;
+                if (noNewCount >= 15) {
+                    console.log(`  ✓ Pass ${pass} done: ${currentSize} total videos (stopped at scroll ${scrollCount})`);
+                    break;
+                }
+            } else {
+                const newVideos = currentSize - lastSize;
+                noNewCount = 0;
+                lastSize = currentSize;
+
+                if (scrollCount % 10 === 0) {
+                    console.log(`  📊 Scroll ${scrollCount}: ${currentSize} videos (+${newVideos} new)`);
+                }
+            }
+        }
+
+        console.log(`  📈 Pass ${pass} results: ${allUrls.size} total unique videos`);
+
+        if (pass < totalPasses) {
+            console.log(`  ⏳ Waiting 5 seconds before next pass...`);
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
+
+    const finalUrls = Array.from(allUrls).sort();
+
+    console.log('\n' + '='.repeat(70));
+    console.log('🎉 SCRAPING COMPLETE!');
+    console.log('='.repeat(70));
+    console.log(`📊 Total unique videos found: ${finalUrls.length}`);
+    console.log('💾 Downloading results file...');
+
+    // 🔥 AUTO-DOWNLOAD TXT FILE
+    const blob = new Blob([finalUrls.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    a.href = url;
+    a.download = `instagram_video_links_${timestamp}.txt`;
+
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    console.log(`💾 Saved as instagram_video_links_${timestamp}.txt`);
+})();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

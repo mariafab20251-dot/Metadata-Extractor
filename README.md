@@ -47,6 +47,24 @@ run.bat
 
 ⏱ **Total setup time:** 5-15 minutes (depends on internet speed — PyTorch is ~200 MB).
 
+### 🔄 Updating to the Latest Version
+
+```batch
+:: 1. Pull the latest code from GitHub
+git pull
+
+:: 2. If dependencies changed, re-run the installer (safe — won't re-download everything)
+setup\install_dependencies.bat
+
+:: 3. Or just update changed packages manually
+venv\Scripts\pip install -r requirements.txt --upgrade
+
+:: 4. Launch the updated app
+run.bat
+```
+
+Git will show you what changed (`git log --oneline`). Your downloaded videos, cookies, and models in `data/` folder are **not affected** — only the code updates.
+
 ## 🗂️ Project Structure
 
 ```

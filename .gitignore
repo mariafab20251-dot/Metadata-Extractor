@@ -44,3 +44,12 @@ cookies.txt
 debug_xiaohongshu.html
 debug_xiaohongshu.json
 debug_selenium.html
+
+# Junk / temp files
+*.zip
+"New Text Document.txt"
+SpinLinks.txt
+check_missing.py
+install_project.bat
+linkssss.txt
+test_xhs.py

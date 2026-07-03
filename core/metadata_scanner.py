@@ -69,7 +69,7 @@ class MetadataScanner:
         if progress_callback:
             progress_callback("Fetching playlist entries...")
 
-        entries = self.get_playlist_entries(channel_url, flat=True)
+        entries = self.get_playlist_entries(channel_url, flat=False)
         total = len(entries)
 
         if progress_callback:
@@ -95,6 +95,7 @@ class MetadataScanner:
                                "YouTube")
 
             duration = entry.get("duration", 0)
+            view_count = entry.get("view_count", 0) or 0
 
             # Filter shorts if requested
             if filter_shorts and duration > 180:
@@ -109,15 +110,11 @@ class MetadataScanner:
                 "description": title,
                 "url": url,
                 "duration": duration,
-                "view_count": 0  # placeholder, filled below
+                "view_count": view_count
             })
 
             if progress_callback and i % 50 == 0:
                 progress_callback(f"Scanning... {i}/{total} ({len(videos)} videos found)")
-
-        # Always fetch real view counts (parallel, 8 workers)
-        if videos:
-            videos = self._fetch_view_counts(videos, progress_callback)
 
         # Apply popularity filter if requested (min_views / top_n sorting)
         if (min_views > 0 or top_n > 0) and videos:

@@ -91,6 +91,7 @@ class Dashboard:
             'voice_only': tk.BooleanVar(value=False),
             'extract_ocr': tk.BooleanVar(value=True),
             'extract_speech': tk.BooleanVar(value=True),
+            'extract_captions': tk.BooleanVar(value=False),
             'extract_metadata': tk.BooleanVar(value=True),
             'auto_excel': tk.BooleanVar(value=True),
             'force_reprocess': tk.BooleanVar(value=False),
@@ -229,6 +230,10 @@ class Dashboard:
 
         tk.Checkbutton(left_col, text="🎤 Speech Transcription",
                       variable=self.features['extract_speech'],
+                      font=("Arial", 10), command=self.update_feature_status).pack(anchor=tk.W, pady=2)
+
+        tk.Checkbutton(left_col, text="📝 YouTube Captions (no download)",
+                      variable=self.features['extract_captions'],
                       font=("Arial", 10), command=self.update_feature_status).pack(anchor=tk.W, pady=2)
 
         tk.Checkbutton(left_col, text="📋 Metadata (Captions/Hashtags)",
@@ -2903,14 +2908,20 @@ class Dashboard:
         download_audio = self.features['download_audio'].get()
         ocr = self.features['extract_ocr'].get()
         speech = self.features['extract_speech'].get()
+        captions = self.features['extract_captions'].get()
         metadata = self.features['extract_metadata'].get()
 
-        if ocr and not download and not download_audio:
+        if captions and not download and not download_audio and not ocr and not speech:
+            self.feature_status.config(
+                text="✅ YouTube Captions mode: No download needed",
+                fg='green'
+            )
+        elif ocr and not download and not download_audio:
             self.feature_status.config(
                 text="⚠️ Warning: OCR requires video download",
                 fg='orange'
             )
-        elif not any([ocr, speech, metadata]):
+        elif not any([ocr, speech, metadata, captions]):
             self.feature_status.config(
                 text="⚠️ Select at least one extraction feature",
                 fg='red'
@@ -3115,6 +3126,7 @@ class Dashboard:
             voice_only = self.features['voice_only'].get()
             extract_ocr = self.features['extract_ocr'].get()
             extract_speech = self.features['extract_speech'].get()
+            extract_captions = self.features['extract_captions'].get()
             audio_format = self.audio_format.get()
             video_quality = self.video_quality.get()
             force_reprocess = self.features['force_reprocess'].get()
@@ -3149,6 +3161,7 @@ class Dashboard:
                         voice_only=voice_only,
                         extract_ocr=extract_ocr,
                         extract_speech=extract_speech,
+                        extract_captions=extract_captions,
                         force_reprocess=force_reprocess
                     )
 

@@ -271,7 +271,7 @@ class VideoProcessor:
 
         return None
 
-    def process_video(self, url, platform, log_callback, force_reprocess=False, download_video=True, download_audio=False, audio_format="mp3", video_quality="best", voice_only=False, extract_ocr=True, extract_speech=True):
+    def process_video(self, url, platform, log_callback, force_reprocess=False, download_video=True, download_audio=False, audio_format="mp3", video_quality="best", voice_only=False, extract_ocr=True, extract_speech=True, extract_captions=False):
         # Progress wrapper for download updates — replaces last log line
         def _dl_progress(msg):
             try:
@@ -285,7 +285,7 @@ class VideoProcessor:
 
             need_ocr = download_video and extract_ocr and not existing_data['overlay_text']
             need_speech = (download_video or download_audio) and extract_speech and not existing_data['speech_text']
-            need_metadata = not existing_data['captions'] and not existing_data['hashtags']
+            need_metadata = (extract_captions and platform in ('youtube',)) or (not existing_data['captions'] and not existing_data['hashtags'])
 
             if not any([need_ocr, need_speech, need_metadata]):
                 log_callback(f"⏭️ Skipping (all requested data already exists)")
@@ -385,6 +385,52 @@ class VideoProcessor:
 
             if not video_id:
                 raise Exception("Could not extract video ID")
+
+            # Extract YouTube captions without downloading (if requested)
+            if extract_captions and platform in ('youtube',):
+                log_callback(f"📝 Extracting YouTube captions (no download)...")
+                try:
+                    import yt_dlp
+                    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        # Try manual/auto captions in order of preference
+                        caption_text = ""
+                        for lang in ('en', 'en-US', 'en-GB'):
+                            subs = (info.get('subtitles') or {}).get(lang, [])
+                            auto_subs = (info.get('automatic_captions') or {}).get(lang, [])
+                            for entry in subs + auto_subs:
+                                url2 = entry.get('url')
+                                if url2:
+                                    import requests
+                                    resp = requests.get(url2, timeout=15)
+                                    if resp.status_code == 200:
+                                        text = resp.text
+                                        # Strip VTT formatting
+                                        text = re.sub(r'^﻿', '', text)
+                                        text = re.sub(r'WEBVTT.*?\n\n', '', text)
+                                        text = re.sub(r'\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}.*?\n', '', text)
+                                        text = re.sub(r'<[^>]+>', '', text)
+                                        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+                                        if text:
+                                            caption_text = text
+                                            break
+                            if caption_text:
+                                break
+                        if caption_text:
+                            captions = caption_text
+                            log_callback(f"✅ Extracted {len(caption_text)} chars of captions")
+                        else:
+                            log_callback("⚠️ No captions available for this video (try English-only)")
+                except Exception as e:
+                    log_callback(f"⚠️ Caption extraction failed: {str(e)[:80]}")
+
+                # If ONLY captions requested (no other processing), save and return early
+                if not download_video and not download_audio and not need_ocr and not need_speech and not need_metadata:
+                    log_callback("✅ Captions-only mode — saving results")
+                    self.db.save_extracted_data(url, video_id, video_channel, video_title,
+                                                video_description, "", "", captions, hashtags,
+                                                str(video_duration), str(video_view_count))
+                    return captions
 
             # If voice_only mode is enabled, check for voiceover first before downloading anything
             if voice_only and (download_video or download_audio):

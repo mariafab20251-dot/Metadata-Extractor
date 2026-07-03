@@ -201,8 +201,9 @@ Hashtags:  {data['hashtags'] or '(None)'}
             f.write(report.strip())
 
     def generate_excel_report(self, json_path=None, channel_folder=None):
-        """Generate clean Excel report from JSON data"""
+        """Generate/append clean Excel report from JSON data (appends new rows, skips duplicates)."""
         import pandas as pd
+        from openpyxl import load_workbook
         from openpyxl.styles import Alignment
 
         # Determine paths
@@ -229,11 +230,34 @@ Hashtags:  {data['hashtags'] or '(None)'}
             if not data:
                 return None
 
-            # Clean and format data
+            # Build set of existing video_ids if file exists (to skip duplicates)
+            existing_ids = set()
+            if output_excel.exists():
+                try:
+                    old_wb = load_workbook(output_excel)
+                    old_ws = old_wb.active
+                    header_row = [cell.value for cell in old_ws[1]]
+                    vid_idx = None
+                    for i, h in enumerate(header_row):
+                        if h == "Video ID":
+                            vid_idx = i
+                            break
+                    if vid_idx is not None:
+                        for row_cells in old_ws.iter_rows(min_row=2, values_only=True):
+                            if row_cells[vid_idx]:
+                                existing_ids.add(str(row_cells[vid_idx]))
+                    old_wb.close()
+                except Exception:
+                    pass  # File exists but unreadable — will recreate
+
+            # Clean and format data, skip existing
             cleaned_data = []
             for item in data:
+                vid = item['video_id']
+                if vid in existing_ids:
+                    continue
                 cleaned_data.append({
-                    'Video ID': item['video_id'],
+                    'Video ID': vid,
                     'Platform': item['platform'].upper(),
                     'Channel Name': item.get('channel_name', ''),
                     'Title': item.get('video_title', ''),
@@ -246,48 +270,44 @@ Hashtags:  {data['hashtags'] or '(None)'}
                     'Date Processed': item['timestamp'].split('T')[0],
                     'View Count': item.get('view_count', 0),
                     'Duration (sec)': item.get('video_duration', 0),
-                    # Blank columns — user fills these manually with their own
-                    # rewritten script and title after downloading the report.
                     'Custom Script': '',
                     'Custom Title': '',
                 })
 
-            # Create DataFrame
-            df = pd.DataFrame(cleaned_data)
+            if not cleaned_data:
+                return str(output_excel)  # Nothing new to add
 
-            # Export to Excel with formatting
-            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Video Extractions')
-
-                # Get worksheet
-                worksheet = writer.sheets['Video Extractions']
-
-                # Set column widths
-                worksheet.column_dimensions['A'].width = 15  # Video ID
-                worksheet.column_dimensions['B'].width = 12  # Platform
-                worksheet.column_dimensions['C'].width = 22  # Channel Name
-                worksheet.column_dimensions['D'].width = 50  # Title
-                worksheet.column_dimensions['E'].width = 60  # Description
-                worksheet.column_dimensions['F'].width = 50  # URL
-                worksheet.column_dimensions['G'].width = 60  # Overlay Text
-                worksheet.column_dimensions['H'].width = 60  # Speech
-                worksheet.column_dimensions['I'].width = 40  # Captions
-                worksheet.column_dimensions['J'].width = 30  # Hashtags
-                worksheet.column_dimensions['K'].width = 15  # Date
-                worksheet.column_dimensions['L'].width = 12  # View Count
-                worksheet.column_dimensions['M'].width = 14  # Duration (sec)
-                worksheet.column_dimensions['N'].width = 60  # Custom Script
-                worksheet.column_dimensions['O'].width = 50  # Custom Title
-
-                # Enable text wrapping
-                for row in worksheet.iter_rows():
-                    for cell in row:
-                        cell.alignment = Alignment(wrap_text=True, vertical='top')
+            # Append or create
+            if existing_ids and output_excel.exists():
+                # Append to existing workbook
+                wb = load_workbook(output_excel)
+                ws = wb.active
+                start_row = ws.max_row + 1
+                headers = list(cleaned_data[0].keys())
+                for row_offset, item in enumerate(cleaned_data):
+                    row_num = start_row + row_offset
+                    for col_idx, key in enumerate(headers, 1):
+                        ws.cell(row=row_num, column=col_idx, value=item[key])
+                wb.save(output_excel)
+                wb.close()
+            else:
+                # Fresh file
+                df = pd.DataFrame(cleaned_data)
+                with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Video Extractions')
+                    worksheet = writer.sheets['Video Extractions']
+                    # Set column widths
+                    for col_letter, w in [('A',15),('B',12),('C',22),('D',50),('E',60),('F',50),
+                                           ('G',60),('H',60),('I',40),('J',30),('K',15),('L',12),
+                                           ('M',14),('N',60),('O',50)]:
+                        worksheet.column_dimensions[col_letter].width = w
+                    for row in worksheet.iter_rows():
+                        for cell in row:
+                            cell.alignment = Alignment(wrap_text=True, vertical='top')
 
             return str(output_excel)
 
         except ImportError:
-            # pandas/openpyxl not installed
             return None
         except Exception as e:
             print(f"Excel generation error: {e}")

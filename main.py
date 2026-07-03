@@ -390,37 +390,98 @@ class VideoProcessor:
             if extract_captions and platform in ('youtube',):
                 log_callback(f"📝 Extracting YouTube captions (no download)...")
                 try:
-                    import yt_dlp
+                    import yt_dlp, requests
                     with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
                         info = ydl.extract_info(url, download=False)
-                        # Try manual/auto captions in order of preference
-                        caption_text = ""
-                        for lang in ('en', 'en-US', 'en-GB'):
-                            subs = (info.get('subtitles') or {}).get(lang, [])
-                            auto_subs = (info.get('automatic_captions') or {}).get(lang, [])
-                            for entry in subs + auto_subs:
-                                url2 = entry.get('url')
-                                if url2:
-                                    import requests
-                                    resp = requests.get(url2, timeout=15)
-                                    if resp.status_code == 200:
-                                        text = resp.text
-                                        # Strip VTT formatting
-                                        text = re.sub(r'^﻿', '', text)
-                                        text = re.sub(r'WEBVTT.*?\n\n', '', text)
-                                        text = re.sub(r'\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}.*?\n', '', text)
-                                        text = re.sub(r'<[^>]+>', '', text)
-                                        text = re.sub(r'\n{3,}', '\n\n', text).strip()
-                                        if text:
-                                            caption_text = text
-                                            break
-                            if caption_text:
-                                break
-                        if caption_text:
-                            captions = caption_text
-                            log_callback(f"✅ Extracted {len(caption_text)} chars of captions")
-                        else:
-                            log_callback("⚠️ No captions available for this video (try English-only)")
+
+                    def _parse_youtube_caption_text(text, fmt=''):
+                        """Extract plain text from YouTube caption response."""
+                        if not text:
+                            return ''
+                        # JSON/pb3 format (preferred — cleanest, no repetitions)
+                        if text.strip().startswith('{'):
+                            try:
+                                parsed = json.loads(text)
+                            except (json.JSONDecodeError, ValueError):
+                                return text.strip()
+                            events = parsed.get('events', [])
+                            seen = set()
+                            lines = []
+                            for ev in events:
+                                segs = ev.get('segs', [])
+                                for seg in segs:
+                                    utf8 = seg.get('utf8', '')
+                                    word = utf8.strip()
+                                    if word and word not in seen:
+                                        seen.add(word)
+                                        lines.append(word)
+                            return ' '.join(lines).strip()
+                        # SRT format (simple timestamps)
+                        if fmt == 'srt' or text.strip()[:1].isdigit():
+                            text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', text)
+                            text = re.sub(r'<[^>]+>', '', text)
+                            text = re.sub(r'\n\s*\n+', '\n', text).strip()
+                            return text
+                        # VTT format (messy with repetitions, needs dedup)
+                        text = re.sub(r'^WEBVTT.*?\n', '', text, flags=re.DOTALL)
+                        text = re.sub(r'\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}.*?\n', '', text)
+                        text = re.sub(r'<[^>]+>', '', text)
+                        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+                        # Dedup repeated lines (VTT overlaps old+new text)
+                        seen = set()
+                        unique = []
+                        for line in text.split('\n'):
+                            line = line.strip()
+                            if line and line not in seen:
+                                seen.add(line)
+                                unique.append(line)
+                        return ' '.join(unique).strip()
+
+                    def _pick_caption_entry(entries):
+                        """Pick best caption entry from list: json3 > srt > vtt > others."""
+                        score = {'json3': 4, 'srt': 3, 'vtt': 2, 'srv3': 1, 'srv2': 1, 'srv1': 1, 'ttml': 1}
+                        best = None
+                        best_score = -1
+                        for e in entries:
+                            ext = (e.get('ext') or '').lower()
+                            s = score.get(ext, 0)
+                            if s > best_score:
+                                best_score = s
+                                best = e
+                        return best
+
+                    caption_text = ""
+                    for lang in ('en', 'en-US', 'en-GB'):
+                        subs = (info.get('subtitles') or {}).get(lang, [])
+                        auto_subs = (info.get('automatic_captions') or {}).get(lang, [])
+                        all_entries = subs + auto_subs
+                        if not all_entries:
+                            continue
+                        entry = _pick_caption_entry(all_entries)
+                        if not entry or not entry.get('url'):
+                            continue
+                        ext = (entry.get('ext') or '').lower()
+                        try:
+                            resp = requests.get(entry['url'], timeout=15)
+                            if resp.status_code == 200:
+                                parsed = _parse_youtube_caption_text(resp.text, ext)
+                                if parsed:
+                                    caption_text = parsed
+                                    break
+                        except Exception:
+                            continue
+
+                    if caption_text:
+                        captions = caption_text
+                        log_callback(f"✅ Extracted {len(caption_text)} chars of captions")
+
+                        # Auto-skip download if only captions were the goal
+                        if not need_ocr and not need_speech:
+                            log_callback(f"📝 Captions retrieved — skipping video download")
+                            download_video = False
+                            download_audio = False
+                    else:
+                        log_callback("⚠️ No captions available for this video (try English-only)")
                 except Exception as e:
                     log_callback(f"⚠️ Caption extraction failed: {str(e)[:80]}")
 

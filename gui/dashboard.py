@@ -74,6 +74,15 @@ def _extract_yt_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
+def _extract_video_id(name: str) -> str:
+    """Extract actual video ID from filename like 'Title [abc123].mp4' or 'abc123.mp4'."""
+    stem = name.rsplit('.', 1)[0] if '.' in name else name
+    m = re.search(r'\[([a-zA-Z0-9_-]{6,})\]', stem)
+    if m:
+        return m.group(1)
+    return stem
+
+
 class Dashboard:
     def __init__(self, root, processor):
         self.root = root
@@ -1441,7 +1450,7 @@ class Dashboard:
                 r = v["result"]
                 video_name = v["name"]
                 rows.append({
-                    "Video ID": video_name.replace(".mp4", "").replace(".mov", "").replace(".webm", ""),
+                    "Video ID": _extract_video_id(video_name),
                     "Title": r.get("suggested_title", r.get("title", "")),
                     "Video File": video_name,
                     "Language": self.vs_lang_var.get().strip(),
@@ -1454,13 +1463,15 @@ class Dashboard:
                     "Hashtag 2": r.get("hashtag_2", ""),
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 })
-            # If file exists, append to existing data instead of overwriting
+            # Append/merge with existing file (skip duplicate Video IDs)
             existing_path = Path(path)
             if existing_path.exists():
                 try:
                     old_df = pd.read_excel(path)
                     old_rows = old_df.to_dict("records")
-                    rows = old_rows + rows
+                    existing_ids = {str(r.get("Video ID", "")) for r in old_rows if r.get("Video ID")}
+                    deduped_new = [r for r in rows if str(r.get("Video ID", "")) not in existing_ids]
+                    rows = old_rows + deduped_new
                 except Exception:
                     pass  # If read fails, just save new rows
             df = pd.DataFrame(rows)
@@ -1724,7 +1735,7 @@ class Dashboard:
                 r = entry.get("result") or {}
                 url = entry.get("url", "")
                 rows.append({
-                    "Video ID": _extract_yt_id(url) or (Path(url).stem if url and '/' in url else ""),
+                    "Video ID": _extract_yt_id(url) or (_extract_video_id(Path(url).name) if url else ""),
                     "Title": r.get("suggested_title", r.get("title", "")),
                     "Video URL": url,
                     "Language": self.vs_lang_var.get().strip(),
@@ -1742,10 +1753,10 @@ class Dashboard:
                          if self.vs_url_text.get("1.0", tk.END).strip() else "")
             if not first_url and self._vs_file_path:
                 first_url = self._vs_file_path
-            # For local files, use the filename as Video ID; for URLs use _extract_yt_id
+            # For local files, extract video ID from bracket notation; for URLs use _extract_yt_id
             vid_id = _extract_yt_id(first_url)
-            if not vid_id and first_url and ('/' in first_url or '\\' in first_url):
-                vid_id = Path(first_url).stem
+            if not vid_id and first_url:
+                vid_id = _extract_video_id(Path(first_url).name)
             vid_id = vid_id or ""
             rows.append({
                 "Video ID": vid_id,
@@ -1776,13 +1787,15 @@ class Dashboard:
 
         try:
             import pandas as pd
-            # If file exists, append to existing data instead of overwriting
+            # Append/merge with existing file (skip duplicate Video IDs)
             existing_path = Path(path)
             if existing_path.exists():
                 try:
                     old_df = pd.read_excel(path)
                     old_rows = old_df.to_dict("records")
-                    rows = old_rows + rows
+                    existing_ids = {str(r.get("Video ID", "")) for r in old_rows if r.get("Video ID")}
+                    deduped_new = [r for r in rows if str(r.get("Video ID", "")) not in existing_ids]
+                    rows = old_rows + deduped_new
                 except Exception:
                     pass
             df = pd.DataFrame(rows)
@@ -2323,7 +2336,7 @@ class Dashboard:
                 commentary_ref = "; ".join(
                     f"{sp['timestamp']}|{sp['text']}" for sp in spots)
                 rows.append({
-                    "Video ID": video_name.replace(".mp4", "").replace(".mov", "").replace(".webm", ""),
+                    "Video ID": _extract_video_id(video_name),
                     "Title": "",
                     "Video File": video_name,
                     "Language": self.cc_lang_var.get().strip(),
@@ -2337,13 +2350,15 @@ class Dashboard:
                     "Hashtag 2": "",
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 })
-            # Append if file exists
+            # Append/merge with existing file (skip duplicate Video IDs)
             existing_path = Path(path)
             if existing_path.exists():
                 try:
                     old_df = pd.read_excel(path)
                     old_rows = old_df.to_dict("records")
-                    rows = old_rows + rows
+                    existing_ids = {str(r.get("Video ID", "")) for r in old_rows if r.get("Video ID")}
+                    deduped_new = [r for r in rows if str(r.get("Video ID", "")) not in existing_ids]
+                    rows = old_rows + deduped_new
                 except Exception:
                     pass
             df = pd.DataFrame(rows)
@@ -2787,7 +2802,9 @@ class Dashboard:
                 try:
                     old_df = pd.read_excel(path)
                     old_rows = old_df.to_dict("records")
-                    rows = old_rows + rows
+                    existing_ids = {str(r.get("Video ID", "")) for r in old_rows if r.get("Video ID")}
+                    deduped_new = [r for r in rows if str(r.get("Video ID", "")) not in existing_ids]
+                    rows = old_rows + deduped_new
                 except Exception:
                     pass
             df = pd.DataFrame(rows)
@@ -3904,34 +3921,66 @@ class Dashboard:
             self.log(f"{'='*50}")
             self.log(f"✅ Script generation complete: {updated_count} updated, {error_count} errors")
 
-            # ── Build per-language Excel file ───────────────────
+            # ── Build per-language Excel file (append mode) ────────
             if results_list:
-                out_df = pd.DataFrame(results_list)
                 # Determine channel name from source Excel parent folder
                 src = Path(excel_path)
                 channel_name = src.parent.name
-                # Clean channel name for filename
                 safe_channel = "".join(c if c.isalnum() or c in " -_" else "_" for c in channel_name)[:40]
                 lang_name = lang.capitalize()
                 out_filename = f"{lang_name} {safe_channel}.xlsx"
                 out_path = src.parent / out_filename
 
-                out_df.to_excel(out_path, index=False)
+                # Build set of existing Video IDs to avoid duplicates
+                existing_ids = set()
+                new_rows = []
+                if out_path.exists():
+                    try:
+                        old_df = pd.read_excel(out_path)
+                        for _, old_row in old_df.iterrows():
+                            vid = old_row.get("Video ID", "")
+                            if vid:
+                                existing_ids.add(str(vid))
+                        for item in results_list:
+                            if str(item.get("Video ID", "")) not in existing_ids:
+                                new_rows.append(item)
+                    except Exception:
+                        new_rows = results_list
+                else:
+                    new_rows = results_list
 
-                # Apply text wrapping
-                try:
-                    wb = load_workbook(out_path)
-                    ws = wb.active
-                    from openpyxl.styles import Alignment
-                    for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row):
-                        for cell in row_cells:
-                            cell.alignment = Alignment(wrap_text=True, vertical="top")
-                    wb.save(out_path)
-                    wb.close()
-                except Exception:
-                    pass  # Non-critical formatting
+                if not new_rows:
+                    self.log(f"📁 All {len(existing_ids)} videos already in {out_filename} — nothing new")
+                else:
+                    if existing_ids:
+                        # Append to existing file
+                        wb = load_workbook(out_path)
+                        ws = wb.active
+                        headers = list(new_rows[0].keys())
+                        start_row = ws.max_row + 1
+                        for row_offset, item in enumerate(new_rows):
+                            for col_idx, key in enumerate(headers, 1):
+                                ws.cell(row=start_row + row_offset, column=col_idx,
+                                        value=item.get(key, ""))
+                        # Apply text wrapping to new rows
+                        for row_cells in ws.iter_rows(min_row=start_row, max_row=ws.max_row):
+                            for cell in row_cells:
+                                cell.alignment = Alignment(wrap_text=True, vertical="top")
+                        wb.save(out_path)
+                        wb.close()
+                    else:
+                        # Fresh file
+                        out_df = pd.DataFrame(new_rows)
+                        out_df.to_excel(out_path, index=False)
+                        wb = load_workbook(out_path)
+                        ws = wb.active
+                        for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row):
+                            for cell in row_cells:
+                                cell.alignment = Alignment(wrap_text=True, vertical="top")
+                        wb.save(out_path)
+                        wb.close()
 
-                self.log(f"📁 Per-language Excel saved: {out_path}")
+                    self.log(f"📁 Per-language Excel saved/appended: {out_filename} ({len(new_rows)} new)")
                 self.root.after(100, lambda p=str(out_path), c=updated_count, lg=lang: messagebox.showinfo(
                     "Script Generation Complete",
                     f"✅ {c} scripts generated ({lg.capitalize()})\n\n📁 Saved to:\n{p}"

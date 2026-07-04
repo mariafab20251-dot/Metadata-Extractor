@@ -285,7 +285,7 @@ class VideoProcessor:
 
             need_ocr = download_video and extract_ocr and not existing_data['overlay_text']
             need_speech = (download_video or download_audio) and extract_speech and not existing_data['speech_text']
-            need_metadata = (extract_captions and platform in ('youtube',)) or (not existing_data['captions'] and not existing_data['hashtags'])
+            need_metadata = (platform in ('youtube',)) or (not existing_data['captions'] and not existing_data['hashtags'])
 
             if not any([need_ocr, need_speech, need_metadata]):
                 log_callback(f"⏭️ Skipping (all requested data already exists)")
@@ -372,6 +372,13 @@ class VideoProcessor:
                                 video_channel = info.get('channel') or info.get('uploader', '') or ''
                     except:
                         pass
+                # Discard stale title-as-captions cached by older versions:
+                # YouTube captions now come only from the dedicated extractor below,
+                # so a cached value equal to the title/description is bad data.
+                if platform in ('youtube',) and captions:
+                    _placeholder = f"{video_title}. {video_description}".strip('. ')
+                    if captions.strip() in (video_title.strip(), _placeholder, video_title.strip() + '.'):
+                        captions = ""
             else:
                 # For re-processed entries, restore from existing captions
                 if captions and '. ' in captions:

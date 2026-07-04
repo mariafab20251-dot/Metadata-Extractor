@@ -31,7 +31,7 @@ class YouTubeScraper:
                 title = info.get('title', '')
                 tags = info.get('tags', [])
 
-                captions = f"{title}. {description}" if description else title
+                captions = ""  # YouTube has dedicated caption extraction; don't fake with title
                 hashtags = " ".join([f"#{tag}" for tag in tags if tag])
 
                 return video_id, captions, hashtags

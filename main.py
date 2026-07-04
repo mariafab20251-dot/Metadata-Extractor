@@ -388,6 +388,8 @@ class VideoProcessor:
 
             # Extract YouTube captions without downloading (if requested)
             if extract_captions and platform in ('youtube',):
+                # Clear any title/description placeholder from scraper metadata
+                captions = ""
                 log_callback(f"📝 Extracting YouTube captions (no download)...")
                 try:
                     import yt_dlp, requests

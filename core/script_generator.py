@@ -1437,6 +1437,19 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 split_idx = template.index(marker)
                 base = template[:split_idx]
 
+                # Inject language instruction if not English — the master
+                # prompt template has no {language} placeholder, so without
+                # this, Gemini gets zero language guidance and defaults to
+                # English (only the metadata step respects language).
+                lang_name = language.capitalize()
+                if lang_name.lower() != "english":
+                    base = (
+                        f"IMPORTANT: Write the ENTIRE narration script in {lang_name}. "
+                        f"Every sentence, every word must be in {lang_name}"
+                        f" — do NOT use English.\n\n"
+                        f"{base}"
+                    )
+
                 style = style_preference or "Pure thriller pace — like \"Continue\" channel"
                 filled_input = (
                     "YOUR INPUT:\n"

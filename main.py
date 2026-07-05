@@ -305,6 +305,17 @@ class VideoProcessor:
             need_speech = (download_video or download_audio) and extract_speech
             need_metadata = True
 
+        # Fall back to _general_downloads if no channel context is set
+        # (single reel/ video URLs don't embed channel info).  This keeps
+        # the video file and Excel report in the SAME folder hierarchy as
+        # batch/multi-URL runs — not orphaned under data/videos/{platform}.
+        if not self.current_channel_folder:
+            from config import BASE_DIR
+            self.current_channel_folder = BASE_DIR / "channels" / "_general_downloads" / platform
+            self.current_channel_folder.mkdir(parents=True, exist_ok=True)
+            (self.current_channel_folder / "videos").mkdir(exist_ok=True)
+            (self.current_channel_folder / "reports").mkdir(exist_ok=True)
+
         video_path = None
         audio_path = None
         try:
@@ -393,8 +404,10 @@ class VideoProcessor:
             if not video_id:
                 raise Exception("Could not extract video ID")
 
-            # Extract YouTube captions without downloading (if requested)
-            if extract_captions and platform in ('youtube',):
+            # Extract YouTube captions without downloading (always, for YouTube).
+            # youtube.py no longer supplies a caption fallback, so this dedicated
+            # extractor is the only source of real transcript captions.
+            if platform in ('youtube',):
                 # Clear any title/description placeholder from scraper metadata
                 captions = ""
                 log_callback(f"📝 Extracting YouTube captions (no download)...")

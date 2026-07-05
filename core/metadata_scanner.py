@@ -19,7 +19,7 @@ class MetadataScanner:
         """Run command and return output"""
         return subprocess.run(cmd, capture_output=True, text=True)
 
-    def get_playlist_entries(self, url, flat=True):
+    def get_playlist_entries(self, url, flat=True, progress_callback=None):
         """Get all entries from playlist/channel without downloading
 
         Args:
@@ -30,6 +30,8 @@ class MetadataScanner:
                   video — still in a single subprocess call with internal
                   connection reuse and parallel workers, avoiding the
                   overhead of N separate subprocess invocations.
+            progress_callback: Optional function called with a live count as
+                  entries stream in (so the UI doesn't look frozen).
         """
         cmd = self.yt_dlp + ["--no-warnings", "--dump-json", url]
         if flat:
@@ -41,6 +43,8 @@ class MetadataScanner:
                 entries.append(json.loads(line))
             except Exception:
                 continue
+            if progress_callback and len(entries) % 25 == 0:
+                progress_callback(f"Found {len(entries)} videos so far...")
         proc.wait()
         return entries
 
@@ -69,7 +73,13 @@ class MetadataScanner:
         if progress_callback:
             progress_callback("Fetching playlist entries...")
 
-        entries = self.get_playlist_entries(channel_url, flat=False)
+        # Flat listing is near-instant (id/title/duration only). Full per-video
+        # metadata (flat=False) is far too slow on large shorts channels, so we
+        # only fetch view counts later, in parallel, when a popularity filter
+        # actually needs them.
+        needs_views = (min_views > 0 or top_n > 0)
+        entries = self.get_playlist_entries(channel_url, flat=True,
+                                            progress_callback=progress_callback)
         total = len(entries)
 
         if progress_callback:
@@ -94,11 +104,11 @@ class MetadataScanner:
                                entry.get("uploader") or
                                "YouTube")
 
-            duration = entry.get("duration", 0)
+            duration = entry.get("duration", 0) or 0
             view_count = entry.get("view_count", 0) or 0
 
             # Filter shorts if requested
-            if filter_shorts and duration > 180:
+            if filter_shorts and duration and duration > 180:
                 if progress_callback and i % 50 == 0:
                     progress_callback(f"Scanning... {i}/{total} ({len(videos)} shorts found)")
                 continue
@@ -116,8 +126,9 @@ class MetadataScanner:
             if progress_callback and i % 50 == 0:
                 progress_callback(f"Scanning... {i}/{total} ({len(videos)} videos found)")
 
-        # Apply popularity filter if requested (min_views / top_n sorting)
-        if (min_views > 0 or top_n > 0) and videos:
+        # Fetch view counts in parallel ONLY when the popularity filter needs them
+        if needs_views and videos:
+            videos = self._fetch_view_counts(videos, progress_callback)
             videos = self._apply_popularity_filter(videos, min_views, top_n, progress_callback)
 
         return {

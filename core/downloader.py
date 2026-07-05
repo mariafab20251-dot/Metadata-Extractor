@@ -21,6 +21,10 @@ def suppress_output():
 
 
 class VideoDownloader:
+    # Platforms that should save files as "{video_id}.ext" (no title in the
+    # filename) — their IDs are stable and titles add noise / length issues.
+    ID_ONLY_PLATFORMS = {'youtube', 'instagram', 'facebook', 'tiktok'}
+
     def __init__(self, platform, channel_folder=None):
         self.platform = platform
         if channel_folder:
@@ -33,6 +37,10 @@ class VideoDownloader:
         self.audio_dir.mkdir(parents=True, exist_ok=True)
         self.cookies_file = VIDEOS_DIR.parent / "cookies.txt"
 
+    def _id_only(self):
+        """True when this platform should name files by video ID only."""
+        return (self.platform or '').lower() in self.ID_ONLY_PLATFORMS
+
     @staticmethod
     def _sanitize_filename(name):
         """Sanitize a string for use as a filename — remove chars invalid on Windows."""
@@ -44,7 +52,7 @@ class VideoDownloader:
         return name or "untitled"
 
     def download(self, url, video_id, quality="best", title=None, progress_callback=None):
-        if title:
+        if title and not self._id_only():
             safe_title = self._sanitize_filename(title)
             output_path = self.output_dir / f"{safe_title} [{video_id}].mp4"
         else:
@@ -311,7 +319,7 @@ class VideoDownloader:
                 raise Exception(f"❌ Download failed: {error_msg}")
 
     def download_audio(self, url, video_id, audio_format="mp3", voice_only=False, title=None, progress_callback=None):
-        if title:
+        if title and not self._id_only():
             safe_title = self._sanitize_filename(title)
             output_path = self.audio_dir / f"{safe_title} [{video_id}].{audio_format}"
         else:

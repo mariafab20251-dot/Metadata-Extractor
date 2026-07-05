@@ -87,6 +87,13 @@ class DataExporter:
 
         existing_data.append(data)
 
+        # Upsert by video_id: keep only the latest entry per video (reprocessing
+        # should replace stale data, not accumulate duplicates).
+        deduped = {}
+        for item in existing_data:
+            deduped[item.get('video_id')] = item
+        existing_data = list(deduped.values())
+
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(existing_data, f, indent=2, ensure_ascii=False)
 
@@ -201,7 +208,13 @@ Hashtags:  {data['hashtags'] or '(None)'}
             f.write(report.strip())
 
     def generate_excel_report(self, json_path=None, channel_folder=None):
-        """Generate/append clean Excel report from JSON data (appends new rows, skips duplicates)."""
+        """Generate clean Excel report from JSON data.
+
+        Upsert semantics: new videos are appended; videos already in the sheet
+        are updated in place with the latest extracted data (so reprocessing
+        fixes bad rows). The user-editable Custom Script / Custom Title columns
+        are preserved for existing rows.
+        """
         import pandas as pd
         from openpyxl import load_workbook
         from openpyxl.styles import Alignment
@@ -230,34 +243,15 @@ Hashtags:  {data['hashtags'] or '(None)'}
             if not data:
                 return None
 
-            # Build set of existing video_ids if file exists (to skip duplicates)
-            existing_ids = set()
-            if output_excel.exists():
-                try:
-                    old_wb = load_workbook(output_excel)
-                    old_ws = old_wb.active
-                    header_row = [cell.value for cell in old_ws[1]]
-                    vid_idx = None
-                    for i, h in enumerate(header_row):
-                        if h == "Video ID":
-                            vid_idx = i
-                            break
-                    if vid_idx is not None:
-                        for row_cells in old_ws.iter_rows(min_row=2, values_only=True):
-                            if row_cells[vid_idx]:
-                                existing_ids.add(str(row_cells[vid_idx]))
-                    old_wb.close()
-                except Exception:
-                    pass  # File exists but unreadable — will recreate
-
-            # Clean and format data, skip existing
-            cleaned_data = []
+            # Dedupe JSON by video_id, keeping the LAST (newest) entry — the
+            # exporter appends on every reprocess, so later entries are fresher.
+            latest_by_id = {}
             for item in data:
-                vid = item['video_id']
-                if vid in existing_ids:
-                    continue
-                cleaned_data.append({
-                    'Video ID': vid,
+                latest_by_id[item['video_id']] = item
+
+            def _row(item):
+                return {
+                    'Video ID': item['video_id'],
                     'Platform': item['platform'].upper(),
                     'Channel Name': item.get('channel_name', ''),
                     'Title': item.get('video_title', ''),
@@ -272,38 +266,68 @@ Hashtags:  {data['hashtags'] or '(None)'}
                     'Duration (sec)': item.get('video_duration', 0),
                     'Custom Script': '',
                     'Custom Title': '',
-                })
+                }
 
-            if not cleaned_data:
-                return str(output_excel)  # Nothing new to add
+            headers = list(_row(next(iter(latest_by_id.values()))).keys())
+            # Columns to leave untouched when updating an existing row
+            preserve_cols = {'Custom Script', 'Custom Title'}
 
-            # Append or create
-            if existing_ids and output_excel.exists():
-                # Append to existing workbook
-                wb = load_workbook(output_excel)
-                ws = wb.active
-                start_row = ws.max_row + 1
-                headers = list(cleaned_data[0].keys())
-                for row_offset, item in enumerate(cleaned_data):
-                    row_num = start_row + row_offset
-                    for col_idx, key in enumerate(headers, 1):
-                        ws.cell(row=row_num, column=col_idx, value=item[key])
-                wb.save(output_excel)
-                wb.close()
-            else:
-                # Fresh file
-                df = pd.DataFrame(cleaned_data)
-                with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='Video Extractions')
-                    worksheet = writer.sheets['Video Extractions']
-                    # Set column widths
-                    for col_letter, w in [('A',15),('B',12),('C',22),('D',50),('E',60),('F',50),
-                                           ('G',60),('H',60),('I',40),('J',30),('K',15),('L',12),
-                                           ('M',14),('N',60),('O',50)]:
-                        worksheet.column_dimensions[col_letter].width = w
-                    for row in worksheet.iter_rows():
+            if output_excel.exists():
+                try:
+                    wb = load_workbook(output_excel)
+                except Exception:
+                    wb = None
+                if wb is not None:
+                    ws = wb.active
+                    header_row = [cell.value for cell in ws[1]]
+                    try:
+                        vid_col = header_row.index('Video ID') + 1
+                    except ValueError:
+                        vid_col = 1
+                    # Map existing video_id -> row number
+                    row_by_id = {}
+                    for r in range(2, ws.max_row + 1):
+                        vid = ws.cell(row=r, column=vid_col).value
+                        if vid:
+                            row_by_id[str(vid)] = r
+
+                    next_row = ws.max_row + 1
+                    for vid, item in latest_by_id.items():
+                        rowdata = _row(item)
+                        if str(vid) in row_by_id:
+                            # Update in place, preserving user-edited columns
+                            r = row_by_id[str(vid)]
+                            for col_idx, key in enumerate(headers, 1):
+                                if key in preserve_cols:
+                                    continue
+                                ws.cell(row=r, column=col_idx, value=rowdata[key])
+                        else:
+                            # Append new row
+                            for col_idx, key in enumerate(headers, 1):
+                                ws.cell(row=next_row, column=col_idx, value=rowdata[key])
+                            row_by_id[str(vid)] = next_row
+                            next_row += 1
+
+                    for row in ws.iter_rows():
                         for cell in row:
                             cell.alignment = Alignment(wrap_text=True, vertical='top')
+                    wb.save(output_excel)
+                    wb.close()
+                    return str(output_excel)
+
+            # Fresh file
+            df = pd.DataFrame([_row(i) for i in latest_by_id.values()])
+            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Video Extractions')
+                worksheet = writer.sheets['Video Extractions']
+                # Set column widths
+                for col_letter, w in [('A',15),('B',12),('C',22),('D',50),('E',60),('F',50),
+                                       ('G',60),('H',60),('I',40),('J',30),('K',15),('L',12),
+                                       ('M',14),('N',60),('O',50)]:
+                    worksheet.column_dimensions[col_letter].width = w
+                for row in worksheet.iter_rows():
+                    for cell in row:
+                        cell.alignment = Alignment(wrap_text=True, vertical='top')
 
             return str(output_excel)
 

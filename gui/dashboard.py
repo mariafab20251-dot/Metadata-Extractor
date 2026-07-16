@@ -6,7 +6,12 @@ from pathlib import Path
 import re
 import os
 
+# Import TTS calibration tables from script_generator (single source of truth)
+from core.script_generator import (
+    _VOICE_WPM, _TONE_PACING, _BASE_TTS_SPEED, calc_target_word_count
+)
 
+# ═══════════════════════════════════════════════════════════════
 class ScrollableFrame(tk.Frame):
     """A frame that wraps its contents in a canvas with a vertical scrollbar.
 
@@ -325,6 +330,77 @@ class Dashboard:
         tk.Label(model_frame, text="(tiny=fast/low-quality, large=slow/high-quality)",
                 font=("Arial", 8, "italic"), fg="#888").pack(side=tk.LEFT)
 
+        # ── Gemini API Configuration ────────────────────────────
+        api_frame = tk.LabelFrame(SW, text="🔑 Gemini API Configuration",
+                                  font=("Arial", 11, "bold"), padx=15, pady=15)
+        api_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        # Row: entry + action buttons
+        api_row = tk.Frame(api_frame)
+        api_row.pack(fill=tk.X, pady=5)
+
+        tk.Label(api_row, text="🔑 Gemini API Keys:", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        self.gemini_api_key_entry = tk.Entry(api_row, font=("Arial", 10), width=40)
+        self.gemini_api_key_entry.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+
+        tk.Button(api_row, text="➕ Add Key", font=("Arial", 9),
+                 bg='#4CAF50', fg='white',
+                 command=self._add_api_key).pack(side=tk.LEFT, padx=2)
+        tk.Button(api_row, text="🔍 Test All", font=("Arial", 9),
+                 bg='#FF9800', fg='white',
+                 command=self._test_all_keys).pack(side=tk.LEFT, padx=2)
+        tk.Button(api_row, text="💾 Save", font=("Arial", 9),
+                 bg='#2196F3', fg='white',
+                 command=self._save_gemini_config).pack(side=tk.LEFT, padx=2)
+
+        # Label: hint
+        tk.Label(api_row, text="(paste key → Add)", font=("Arial", 8), fg="#888").pack(side=tk.LEFT, padx=2)
+
+        # ── Key listbox + controls ──────────────────────────
+        keys_frame = tk.Frame(api_frame)
+        keys_frame.pack(fill=tk.X, pady=2)
+
+        # Listbox (left side)
+        list_frame = tk.Frame(keys_frame)
+        list_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        self.keys_listbox = tk.Listbox(list_frame, font=("Consolas", 9),
+                                       height=4, yscrollcommand=scrollbar.set,
+                                       selectmode=tk.SINGLE, exportselection=False)
+        scrollbar.config(command=self.keys_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.keys_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Buttons (right side)
+        btn_frame = tk.Frame(keys_frame)
+        btn_frame.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.key_remove_btn = tk.Button(btn_frame, text="🗑 Remove", font=("Arial", 8),
+                                        command=self._remove_api_key, width=10)
+        self.key_remove_btn.pack(pady=2)
+        self.key_up_btn = tk.Button(btn_frame, text="▲ Move Up", font=("Arial", 8),
+                                    command=self._move_key_up, width=10)
+        self.key_up_btn.pack(pady=2)
+        self.key_down_btn = tk.Button(btn_frame, text="▼ Move Down", font=("Arial", 8),
+                                      command=self._move_key_down, width=10)
+        self.key_down_btn.pack(pady=2)
+
+        # Active key status
+        self.gemini_status_label = tk.Label(api_frame, text="", font=("Arial", 9))
+        self.gemini_status_label.pack(anchor=tk.W, pady=(2, 2))
+
+        # ── Service Account JSON file row ───────────────────
+        sa_row = tk.Frame(api_frame)
+        sa_row.pack(fill=tk.X, pady=2)
+
+        tk.Label(sa_row, text="OR Service Account JSON:", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        self.sa_path_var = tk.StringVar(value="")
+        tk.Label(sa_row, textvariable=self.sa_path_var, font=("Arial", 8), fg="#666",
+                width=40, anchor=tk.W).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        tk.Button(sa_row, text="Browse", font=("Arial", 8),
+                 bg='#607D8B', fg='white', command=self._browse_service_account).pack(side=tk.LEFT, padx=2)
+
         # Action Buttons Section
         action_section = tk.Frame(SW)
         action_section.pack(fill=tk.X, padx=10, pady=10)
@@ -573,80 +649,12 @@ class Dashboard:
         tk.Label(info_frame, text="🤖 Script Generator: Convert transcripts into cinematic narration using Gemini AI",
                 bg='#fff3e0', font=("Arial", 10, "italic"), fg='#e65100').pack(pady=10, padx=10)
 
-        # Config section — API Key + Niche
-        config_frame = tk.LabelFrame(_SW, text="⚙️ Configuration",
-                                    font=("Arial", 11, "bold"), padx=15, pady=15)
-        config_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        # ── Multi-key management ────────────────────────────
-        # Row: entry + action buttons
-        api_row = tk.Frame(config_frame)
-        api_row.pack(fill=tk.X, pady=5)
-
-        tk.Label(api_row, text="🔑 Gemini API Keys:", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
-        self.gemini_api_key_entry = tk.Entry(api_row, font=("Arial", 10), width=40)
-        self.gemini_api_key_entry.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
-
-        tk.Button(api_row, text="➕ Add Key", font=("Arial", 9),
-                 bg='#4CAF50', fg='white',
-                 command=self._add_api_key).pack(side=tk.LEFT, padx=2)
-        tk.Button(api_row, text="🔍 Test All", font=("Arial", 9),
-                 bg='#FF9800', fg='white',
-                 command=self._test_all_keys).pack(side=tk.LEFT, padx=2)
-        tk.Button(api_row, text="💾 Save", font=("Arial", 9),
-                 bg='#2196F3', fg='white',
-                 command=self._save_gemini_config).pack(side=tk.LEFT, padx=2)
-
-        # Label: hint
-        tk.Label(api_row, text="(paste key → Add)", font=("Arial", 8), fg="#888").pack(side=tk.LEFT, padx=2)
-
-        # ── Key listbox + controls ──────────────────────────
-        keys_frame = tk.Frame(config_frame)
-        keys_frame.pack(fill=tk.X, pady=2)
-
-        # Listbox (left side)
-        list_frame = tk.Frame(keys_frame)
-        list_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-
-        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL)
-        self.keys_listbox = tk.Listbox(list_frame, font=("Consolas", 9),
-                                       height=4, yscrollcommand=scrollbar.set,
-                                       selectmode=tk.SINGLE, exportselection=False)
-        scrollbar.config(command=self.keys_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.keys_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        # Buttons (right side)
-        btn_frame = tk.Frame(keys_frame)
-        btn_frame.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.key_remove_btn = tk.Button(btn_frame, text="🗑 Remove", font=("Arial", 8),
-                                        command=self._remove_api_key, width=10)
-        self.key_remove_btn.pack(pady=2)
-        self.key_up_btn = tk.Button(btn_frame, text="▲ Move Up", font=("Arial", 8),
-                                    command=self._move_key_up, width=10)
-        self.key_up_btn.pack(pady=2)
-        self.key_down_btn = tk.Button(btn_frame, text="▼ Move Down", font=("Arial", 8),
-                                      command=self._move_key_down, width=10)
-        self.key_down_btn.pack(pady=2)
-
-        # Active key status
-        self.gemini_status_label = tk.Label(config_frame, text="", font=("Arial", 9))
-        self.gemini_status_label.pack(anchor=tk.W, pady=(2, 2))
-
-        # ── Service Account JSON file row ───────────────────
-        sa_row = tk.Frame(config_frame)
-        sa_row.pack(fill=tk.X, pady=2)
-
-        tk.Label(sa_row, text="OR Service Account JSON:", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
-        self.sa_path_var = tk.StringVar(value="")
-        tk.Label(sa_row, textvariable=self.sa_path_var, font=("Arial", 8), fg="#666",
-                width=40, anchor=tk.W).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        tk.Button(sa_row, text="Browse", font=("Arial", 8),
-                 bg='#607D8B', fg='white', command=self._browse_service_account).pack(side=tk.LEFT, padx=2)
-
         # Language + Preset row
-        settings_row = tk.Frame(config_frame)
+        settings_frame = tk.LabelFrame(_SW, text="⚙️ Script Settings",
+                                      font=("Arial", 11, "bold"), padx=15, pady=15)
+        settings_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        settings_row = tk.Frame(settings_frame)
         settings_row.pack(fill=tk.X, pady=5)
 
         tk.Label(settings_row, text="Language:", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
@@ -682,6 +690,21 @@ class Dashboard:
 
         # Internal state: niche_var still exists (consumed downstream) but no UI
         self.niche_var = tk.StringVar(value="")
+
+        # ── TTS Engine selector ─────────────────────────────────
+        tts_frame = tk.LabelFrame(_SW, text="🎤 TTS Engine",
+                                  font=("Arial", 10, "bold"), padx=10, pady=5)
+        tts_frame.pack(fill=tk.X, padx=10, pady=(2, 6))
+        self.tts_engine_var = tk.StringVar(value="cloud")
+        tk.Radiobutton(tts_frame, text="Cloud TTS (Standard — 160 WPM)",
+                       variable=self.tts_engine_var,
+                       value="cloud", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
+        tk.Radiobutton(tts_frame, text="Qwen3 TTS (Slower — ~110 WPM)",
+                       variable=self.tts_engine_var,
+                       value="qwen3", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
+        tk.Radiobutton(tts_frame, text="Gemini TTS (auto speed)",
+                       variable=self.tts_engine_var,
+                       value="gemini", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
 
         # ── About this preset (details panel) ───────────────────
         help_box = tk.LabelFrame(_SW, text="📖 About this preset",
@@ -826,7 +849,15 @@ class Dashboard:
         config_path = self._get_gemini_config_path()
         try:
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            config = {'gemini_api_keys': api_keys}
+            # Preserve existing CC settings (tone, voice model) if present
+            config = {}
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    existing = json.load(f)
+                for k in ('cc_tone', 'cc_voice_model'):
+                    if k in existing:
+                        config[k] = existing[k]
+            config['gemini_api_keys'] = api_keys
             if sa_path:
                 config['service_account_path'] = sa_path
             with open(config_path, 'w') as f:
@@ -996,6 +1027,44 @@ class Dashboard:
         # (the chosen Preset already defines niche and style).
         self.vs_niche_var = tk.StringVar(value="")
         self.vs_style_pref_var = tk.StringVar(value="")
+
+        # ── TTS Engine selector ─────────────────────────────────
+        tts_frame = tk.LabelFrame(left, text="🎤 TTS Engine",
+                                  font=("Arial", 10, "bold"), padx=10, pady=5)
+        tts_frame.pack(fill=tk.X, pady=(2, 6))
+        self.vs_tts_engine_var = tk.StringVar(value="cloud")
+        tk.Radiobutton(tts_frame, text="Cloud TTS (Standard — 160 WPM)",
+                       variable=self.vs_tts_engine_var,
+                       value="cloud", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
+        tk.Radiobutton(tts_frame, text="Qwen3 TTS (Slower — ~110 WPM)",
+                       variable=self.vs_tts_engine_var,
+                       value="qwen3", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
+        tk.Radiobutton(tts_frame, text="Gemini TTS (auto speed)",
+                       variable=self.vs_tts_engine_var,
+                       value="gemini", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
+
+        # ── Voice Model + Tone/Style selectors (Gemini TTS calibration) ──
+        cal_frame = tk.LabelFrame(left, text="🎙️ Voice & Tone (Gemini TTS)",
+                                  font=("Arial", 10, "bold"), padx=10, pady=5)
+        cal_frame.pack(fill=tk.X, pady=(2, 6))
+
+        row1 = tk.Frame(cal_frame)
+        row1.pack(fill=tk.X, padx=5, pady=2)
+        tk.Label(row1, text="Voice Model:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+        self.vs_voice_model_var = tk.StringVar(value="Zephyr")
+        voice_models = sorted(_VOICE_WPM.keys())
+        voice_menu = tk.OptionMenu(row1, self.vs_voice_model_var, *voice_models)
+        voice_menu.config(font=("Arial", 9))
+        voice_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        row2 = tk.Frame(cal_frame)
+        row2.pack(fill=tk.X, padx=5, pady=2)
+        tk.Label(row2, text="Tone / Style:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+        self.vs_tone_var = tk.StringVar(value="Storytelling")
+        tone_names = sorted(_TONE_PACING.keys())
+        tone_menu = tk.OptionMenu(row2, self.vs_tone_var, *tone_names)
+        tone_menu.config(font=("Arial", 9))
+        tone_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Context / Backstory
         ctx_box = tk.LabelFrame(left, text="📖 Context / Backstory (optional)",
@@ -1461,6 +1530,8 @@ class Dashboard:
                     "Word Count": r.get("generated_word_count", 0),
                     "Hashtag 1": r.get("hashtag_1", ""),
                     "Hashtag 2": r.get("hashtag_2", ""),
+                    "Voiceover Style": r.get("voiceover_style", ""),
+                    "Voiceover Speed (WPM)": r.get("voiceover_speed", ""),
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 })
             # Append/merge with existing file (skip duplicate Video IDs)
@@ -1535,6 +1606,21 @@ class Dashboard:
                             break
                     if slug and gen.get_prompt_data(slug):
                         gen._active_prompt_key = slug
+                    # Calculate effective WPM based on TTS engine selection
+                    _vs_engine = getattr(self, 'vs_tts_engine_var', None)
+                    if _vs_engine is not None and _vs_engine.get() == "qwen3":
+                        wpm_val = 110
+                    elif _vs_engine is not None and _vs_engine.get() == "gemini":
+                        # Use calibration tables with selected voice & tone
+                        _vm = getattr(self, 'vs_voice_model_var', None)
+                        _ts = getattr(self, 'vs_tone_var', None)
+                        vm = _vm.get() if _vm else 'Zephyr'
+                        ts = _ts.get() if _ts else 'Storytelling'
+                        wpm_at_1x = _VOICE_WPM.get(vm, 105)
+                        tone_factor = _TONE_PACING.get(ts, 0.85)
+                        wpm_val = round(wpm_at_1x * _BASE_TTS_SPEED * tone_factor)
+                    else:
+                        wpm_val = 165
                     result = gen.generate_script_from_video(
                         video_url=None,
                         video_path=file_path,
@@ -1543,6 +1629,7 @@ class Dashboard:
                         style_preference=style_pref,
                         context=context,
                         transcript=transcript if transcript else None,
+                        wpm=wpm_val,
                         progress_callback=lambda msg: self.root.after(0, lambda m=msg: self.vs_status_label.config(text=m, fg="blue")),
                     )
                     self.root.after(0, lambda: self._vs_handle_result(result))
@@ -1592,6 +1679,21 @@ class Dashboard:
                     self._append_output(
                         f"\n{'='*60}\n📌 URL {i+1}/{total}: {url}\n{'='*60}\n")
 
+                    # Calculate effective WPM based on TTS engine selection
+                    _vs_engine = getattr(self, 'vs_tts_engine_var', None)
+                    if _vs_engine is not None and _vs_engine.get() == "qwen3":
+                        wpm_val = 110
+                    elif _vs_engine is not None and _vs_engine.get() == "gemini":
+                        # Use calibration tables with selected voice & tone
+                        _vm = getattr(self, 'vs_voice_model_var', None)
+                        _ts = getattr(self, 'vs_tone_var', None)
+                        vm = _vm.get() if _vm else 'Zephyr'
+                        ts = _ts.get() if _ts else 'Storytelling'
+                        wpm_at_1x = _VOICE_WPM.get(vm, 105)
+                        tone_factor = _TONE_PACING.get(ts, 0.85)
+                        wpm_val = round(wpm_at_1x * _BASE_TTS_SPEED * tone_factor)
+                    else:
+                        wpm_val = 165
                     result = gen.generate_script_from_video(
                         video_url=url,
                         video_path=None,
@@ -1600,6 +1702,7 @@ class Dashboard:
                         style_preference=style_pref,
                         context=context,
                         transcript=transcript if transcript else None,
+                        wpm=wpm_val,
                         progress_callback=lambda msg: self.root.after(0, lambda m=msg: self.vs_status_label.config(text=m, fg="blue")),
                     )
                     all_results.append({"url": url, "result": result})
@@ -1745,6 +1848,8 @@ class Dashboard:
                     "Word Count": r.get("generated_word_count", 0),
                     "Hashtag 1": r.get("hashtag_1", ""),
                     "Hashtag 2": r.get("hashtag_2", ""),
+                    "Voiceover Style": r.get("voiceover_style", ""),
+                    "Voiceover Speed (WPM)": r.get("voiceover_speed", ""),
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 })
         elif self.vs_last_result:
@@ -1769,6 +1874,8 @@ class Dashboard:
                 "Word Count": r.get("generated_word_count", 0),
                 "Hashtag 1": r.get("hashtag_1", ""),
                 "Hashtag 2": r.get("hashtag_2", ""),
+                "Voiceover Style": r.get("voiceover_style", ""),
+                "Voiceover Speed (WPM)": r.get("voiceover_speed", ""),
                 "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             })
         else:
@@ -1811,6 +1918,7 @@ class Dashboard:
         """Case Commentary tab — Gemini watches a courtroom video and outputs
         a summary, montage clip timestamps, and commentary spots.
         """
+        self._cc_upload_cache = {}  # session cache: video_path → {file_uri, mime_type}
         main_frame = tk.Frame(self._cc_scroller.inner)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
@@ -1838,6 +1946,28 @@ class Dashboard:
                   command=self._cc_browse_file).pack(side=tk.RIGHT, padx=1)
         tk.Button(btn_row, text="📂 From Channels",
                   command=self._cc_browse_channel).pack(side=tk.RIGHT, padx=1)
+
+        # Context / Backstory (optional)
+        ctx_box = tk.LabelFrame(left, text="📖 Context / Backstory (optional)",
+                                font=("Arial", 10, "bold"), padx=10, pady=8)
+        ctx_box.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(ctx_box,
+                 text="Describe what happened before/after the clip, location details, or any background info to help Gemini understand the footage.",
+                 font=("Arial", 8), fg="#666", justify=tk.LEFT, wraplength=300).pack(anchor=tk.W)
+        self.cc_context_text = tk.Text(ctx_box, height=3, width=50, wrap=tk.WORD,
+                                       font=("Arial", 9))
+        self.cc_context_text.pack(fill=tk.X, pady=(2, 0))
+
+        # Optional Script / Description (optional)
+        script_box = tk.LabelFrame(left, text="📝 Optional Script / Description (optional)",
+                                   font=("Arial", 10, "bold"), padx=10, pady=8)
+        script_box.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(script_box,
+                 text="Optionally provide your own script or a detailed description of what happens in the video. Gemini will use this as a reference.",
+                 font=("Arial", 8), fg="#666", justify=tk.LEFT, wraplength=300).pack(anchor=tk.W)
+        self.cc_script_text = tk.Text(script_box, height=4, width=50, wrap=tk.WORD,
+                                      font=("Arial", 9))
+        self.cc_script_text.pack(fill=tk.X, pady=(2, 0))
 
         # Options
         opt_box = tk.LabelFrame(left, text="⚙️ Settings", font=("Arial", 10, "bold"),
@@ -1869,6 +1999,78 @@ class Dashboard:
                   font=("Arial", 8), bg="#455A64", fg="white",
                   command=self._cc_edit_prompt).pack(anchor=tk.W, pady=(0, 4))
 
+        # ── Vertical / Shorts reframe flag ──────────────────────
+        # Writes a "Vertical Format" column into the Excel. Tool 2 (Video
+        # Automation Studio) reads it and reframes the stitched video to 9:16
+        # with speaking-face tracking. The long-video story-cut niche turns
+        # this on automatically at save time even if left unchecked.
+        self.cc_vertical_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            opt_box,
+            text="📱 Vertical / Shorts (9:16) with face tracking",
+            variable=self.cc_vertical_var, font=("Arial", 9),
+            anchor=tk.W).pack(fill=tk.X, pady=(0, 4))
+        tk.Label(opt_box,
+                 text="Tool 2 crops to 9:16 and keeps the speaker in frame. "
+                      "Auto-on for the Long Video niche.",
+                 font=("Arial", 7), fg="#666", justify=tk.LEFT,
+                 wraplength=300).pack(anchor=tk.W, pady=(0, 4))
+
+        # ── Target duration for story-cut mode (MM:SS format) ────────────────
+        dur_row = tk.Frame(opt_box)
+        dur_row.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(dur_row, text="⏱ Target duration (MM:SS):",
+                 font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        self.cc_duration_var = tk.StringVar(value="3:00")
+        self.cc_duration_entry = tk.Entry(
+            dur_row, textvariable=self.cc_duration_var, width=8,
+            font=("Arial", 9), justify=tk.CENTER)
+        self.cc_duration_entry.pack(side=tk.LEFT)
+        tk.Label(dur_row, text="  e.g. 2:50 or 3:00 (target cut length)",
+                 font=("Arial", 7), fg="#666").pack(side=tk.LEFT, padx=(4, 0))
+
+        # ── TTS Engine selector ─────────────────────────────────
+        tts_frame = tk.LabelFrame(opt_box, text="🎤 TTS Engine",
+                                  font=("Arial", 10, "bold"), padx=10, pady=5)
+        tts_frame.pack(fill=tk.X, pady=(2, 6))
+        self.cc_tts_engine_var = tk.StringVar(value="cloud")
+        tk.Radiobutton(tts_frame, text="Cloud TTS (Standard — 160 WPM)",
+                       variable=self.cc_tts_engine_var,
+                       value="cloud", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
+        tk.Radiobutton(tts_frame, text="Qwen3 TTS (Slower — ~110 WPM)",
+                       variable=self.cc_tts_engine_var,
+                       value="qwen3", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
+        tk.Radiobutton(tts_frame, text="Gemini TTS (auto speed)",
+                       variable=self.cc_tts_engine_var,
+                       value="gemini", font=("Arial", 9)).pack(anchor=tk.W, padx=5, pady=1)
+
+        # ── Voice Model + Tone/Style selectors (Gemini TTS calibration) ──
+        cal_frame = tk.LabelFrame(opt_box, text="🎙️ Voice & Tone (Gemini TTS)",
+                                  font=("Arial", 10, "bold"), padx=10, pady=5)
+        cal_frame.pack(fill=tk.X, pady=(2, 6))
+
+        row1 = tk.Frame(cal_frame)
+        row1.pack(fill=tk.X, padx=5, pady=2)
+        tk.Label(row1, text="Voice Model:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+        self.cc_voice_model_var = tk.StringVar(value="Zephyr")
+        voice_models = sorted(_VOICE_WPM.keys())
+        voice_menu = tk.OptionMenu(row1, self.cc_voice_model_var, *voice_models)
+        voice_menu.config(font=("Arial", 9))
+        voice_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Auto-save voice model preference when user changes it
+        self.cc_voice_model_var.trace_add("write", lambda *_: self._cc_save_tone_preference())
+
+        row2 = tk.Frame(cal_frame)
+        row2.pack(fill=tk.X, padx=5, pady=2)
+        tk.Label(row2, text="Tone / Style:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+        self.cc_tone_var = tk.StringVar(value="Storytelling")
+        tone_names = sorted(_TONE_PACING.keys())
+        tone_menu = tk.OptionMenu(row2, self.cc_tone_var, *tone_names)
+        tone_menu.config(font=("Arial", 9))
+        tone_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Auto-save tone preference when user changes it
+        self.cc_tone_var.trace_add("write", lambda *_: self._cc_save_tone_preference())
+
         # About this niche (details panel)
         cc_help_box = tk.LabelFrame(opt_box, text="📖 About this niche",
                                     font=("Arial", 9, "bold"), fg="#1565C0")
@@ -1881,6 +2083,8 @@ class Dashboard:
 
         # Populate the niche dropdown now that it exists.
         self._cc_refresh_presets()
+        # Restore last-selected tone from saved preferences
+        self._cc_load_tone_preference()
 
         # Generate button
         tk.Button(left, text="🎬 Generate Case Commentary",
@@ -1965,13 +2169,13 @@ class Dashboard:
         # Commentary Spots tab
         self.cc_spots_frame = tk.Frame(self.cc_result_notebook)
         self.cc_result_notebook.add(self.cc_spots_frame, text="  Commentary Spots  ")
-        columns = ("#", "Timestamp", "Text")
+        columns = ("#", "Timestamp", "Emotion", "Text")
         self.cc_spots_tree = ttk.Treeview(self.cc_spots_frame, columns=columns,
                                            show="headings", height=8)
         for col in columns:
             self.cc_spots_tree.heading(col, text=col)
-            width = 40 if col == "#" else 80 if col == "Timestamp" else 350
-            self.cc_spots_tree.column(col, width=width, anchor=tk.CENTER if col != "Text" else tk.W)
+            width = 40 if col == "#" else 80 if col in ("Timestamp", "Emotion") else 300
+            self.cc_spots_tree.column(col, width=width, anchor=tk.CENTER if col not in ("Text",) else tk.W)
         self.cc_spots_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Full Output tab
@@ -2190,6 +2394,15 @@ class Dashboard:
         lang = self.cc_lang_var.get().strip()
         niche = self.cc_niche_var.get().strip()
         cc_slug = self._cc_selected_slug()
+        # ── Vertical / Shorts ⇒ force the STORY-CUT prompt ──────────────
+        # (see single-generate path for full rationale) Tool 2's story-cut
+        # mode only works with the long-video prompt; the teaser prompt would
+        # produce 5s flash-cuts + full-video commentary that get truncated.
+        try:
+            if bool(self.cc_vertical_var.get()):
+                cc_slug = "case_commentary_longvideo"
+        except Exception:
+            pass
 
         def _task():
             try:
@@ -2234,7 +2447,20 @@ class Dashboard:
                             self.root.after(0, lambda: self._cc_refresh_batch_list())
                             continue
 
-                        upload = gen._upload_video(local_path)
+                        # Upload to Gemini File API (session-cached)
+                        _cache_key = None
+                        try:
+                            _cache_key = str(Path(local_path).resolve())
+                        except Exception:
+                            pass
+                        _cached = getattr(self, '_cc_upload_cache', {})
+                        if _cache_key and _cache_key in _cached:
+                            upload = _cached[_cache_key]
+                        else:
+                            upload = gen._upload_video(local_path)
+                            if "error" not in upload and _cache_key:
+                                _cached[_cache_key] = upload
+                                self._cc_upload_cache = _cached
                         if "error" in upload:
                             v["result"] = {"error": upload["error"]}
                             v["status"] = "error"
@@ -2253,6 +2479,27 @@ class Dashboard:
                         raw_template = prompt_template.get("narration_prompt", "")
                         prompt = raw_template.replace("{language}", lang)
                         prompt = prompt.replace("{niche_angle}", niche)
+                        try:
+                            _tgt_sec = self._cc_duration_to_sec(
+                                getattr(self, 'cc_duration_var',
+                                        None).get()) if getattr(
+                                self, 'cc_duration_var', None) else 180
+                        except (ValueError, AttributeError):
+                            _tgt_sec = 180
+                        prompt = prompt.replace("{target_duration}",
+                                                str(_tgt_sec))
+
+                        # ── Inject context / backstory and optional script ──
+                        context = self.cc_context_text.get("1.0", tk.END).strip() if hasattr(self, 'cc_context_text') else ""
+                        script_input = self.cc_script_text.get("1.0", tk.END).strip() if hasattr(self, 'cc_script_text') else ""
+                        if context:
+                            prompt += f"\n\n📖 CONTEXT / BACKSTORY (use this to shape the narrative):\n{context}\n"
+                        # ── Auto-context: video metadata from Excel ──
+                        auto_ctx = self._cc_read_video_excel_metadata(v["path"])
+                        if auto_ctx:
+                            prompt += "📹 VIDEO METADATA (title, description, transcript — use this to understand the footage):\n" + auto_ctx + "\n"
+                        if script_input:
+                            prompt += f"\n\n📝 OPTIONAL SCRIPT / DESCRIPTION (incorporate this into the narration where relevant):\n{script_input}\n"
 
                         result = gen._call_gemini_with_file(prompt, upload, timeout=600)
                         if "error" in result:
@@ -2305,10 +2552,12 @@ class Dashboard:
                                    "No successful results to save.")
             return
 
-        default_name = "case_commentary_batch"
+        _prefix = "CCTV" if "cctv" in self._cc_selected_slug().lower() else "CC"
+        _lang = self.cc_lang_var.get().strip()
+        default_name = f"{_prefix}_batch"
         if self._cc_batch_channel_path:
-            default_name = f"{self._cc_batch_channel_path.name}_commentary"
-        default_name += f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            default_name = f"{_prefix}_{self._cc_batch_channel_path.name}"
+        default_name += f"_{_lang}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
         path = filedialog.asksaveasfilename(
             title="Save Batch Case Commentary to Excel",
@@ -2323,6 +2572,17 @@ class Dashboard:
         try:
             import pandas as pd
             rows = []
+            # Vertical / shorts flag (same rule as single save): checkbox OR long-video slug.
+            try:
+                _vertical_b = bool(self.cc_vertical_var.get())
+            except Exception:
+                _vertical_b = False
+            try:
+                if self._cc_selected_slug() == "case_commentary_longvideo":
+                    _vertical_b = True
+            except Exception:
+                pass
+            vertical_flag = "Yes" if _vertical_b else "No"
             for v in results:
                 r = v["result"]
                 video_name = v["name"]
@@ -2335,6 +2595,25 @@ class Dashboard:
                     for c in r.get("clips", []))
                 commentary_ref = "; ".join(
                     f"{sp['timestamp']}|{sp['text']}" for sp in spots)
+                # ── Thumbnail: extract the Gemini-chosen frame ──
+                thumb_ts = r.get("thumbnail_ts", "") or ""
+                thumb_text = r.get("thumbnail_text", "") or ""
+                thumb_frame_path = ""
+                if thumb_ts and v.get("path"):
+                    try:
+                        _sec = r.get("thumbnail_sec", 0) or 0
+                        _frame_out = Path(path).with_name(
+                            f"{_extract_video_id(video_name)}_thumbframe.jpg")
+                        import subprocess as _sp
+                        _sp.run(
+                            ['ffmpeg', '-y', '-loglevel', 'error',
+                             '-ss', str(_sec), '-i', str(v["path"]),
+                             '-frames:v', '1', '-q:v', '2', str(_frame_out)],
+                            check=True, capture_output=True, timeout=60)
+                        if _frame_out.is_file() and _frame_out.stat().st_size > 0:
+                            thumb_frame_path = str(_frame_out)
+                    except Exception:
+                        thumb_frame_path = ""
                 rows.append({
                     "Video ID": _extract_video_id(video_name),
                     "Title": "",
@@ -2346,6 +2625,12 @@ class Dashboard:
                     "Word Count": len(summary.split()),
                     "Montage Clips": clips_ref,
                     "Commentary Spots": commentary_ref,
+                    "Vertical Format": vertical_flag,
+                    "Thumbnail Time": thumb_ts,
+                    "Thumbnail Text": thumb_text,
+                    "Thumbnail Frame": thumb_frame_path,
+                    "Voiceover Style": r.get("voiceover_style", ""),
+                    "Voiceover Speed (WPM)": r.get("voiceover_speed", 0),
                     "Hashtag 1": "",
                     "Hashtag 2": "",
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -2451,6 +2736,40 @@ class Dashboard:
             preselect_slug=self._cc_selected_slug(),
             on_close=self._cc_refresh_presets)
 
+    def _cc_save_tone_preference(self):
+        """Save the selected tone and voice model to gemini_config.json so they persist across restarts."""
+        import json
+        try:
+            config_path = self._get_gemini_config_path()
+            config = {}
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+            config['cc_tone'] = self.cc_tone_var.get()
+            config['cc_voice_model'] = self.cc_voice_model_var.get()
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, 'w') as f:
+                json.dump(config, f)
+        except Exception:
+            pass  # best-effort save
+
+    def _cc_load_tone_preference(self):
+        """Restore the last-selected tone and voice model from saved config."""
+        import json
+        try:
+            config_path = self._get_gemini_config_path()
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                saved_tone = config.get('cc_tone', '')
+                if saved_tone and saved_tone in _TONE_PACING:
+                    self.cc_tone_var.set(saved_tone)
+                saved_vm = config.get('cc_voice_model', '')
+                if saved_vm and saved_vm in _VOICE_WPM:
+                    self.cc_voice_model_var.set(saved_vm)
+        except Exception:
+            pass  # best-effort load
+
     def _cc_generate(self):
         """Main generation: download video, upload to Gemini, get structured output."""
         import threading
@@ -2459,6 +2778,8 @@ class Dashboard:
         file_path = self._cc_file_path
         lang = self.cc_lang_var.get().strip()
         niche = self.cc_niche_var.get().strip()
+        context = self.cc_context_text.get("1.0", tk.END).strip() if hasattr(self, 'cc_context_text') else ""
+        script_input = self.cc_script_text.get("1.0", tk.END).strip() if hasattr(self, 'cc_script_text') else ""
 
         if not url and not file_path:
             self.cc_status_label.config(text="❌ Enter a YouTube URL or select a video file.", fg="red")
@@ -2497,10 +2818,41 @@ class Dashboard:
                     self.root.after(0, lambda: self.cc_status_label.config(
                         text=f"❌ {local_path.get('error', 'Download failed')}", fg="red"))
                     return
+                # Remember the resolved local file so the Excel export can grab
+                # the Gemini-chosen thumbnail frame from it.
+                self._cc_local_video = local_path
 
-                # 2. Upload to Gemini File API
-                status("☁️ Uploading video to Gemini...")
-                upload = gen._upload_video(local_path, progress_callback=lambda m: status(m))
+                # ── Measure video duration for word count calibration ──
+                status("⏱️ Measuring video duration...")
+                video_duration = 0.0
+                try:
+                    import subprocess, json
+                    probe = subprocess.run(
+                        ['ffprobe', '-v', 'error', '-show_entries',
+                         'format=duration', '-of', 'json', local_path],
+                        capture_output=True, text=True, timeout=30)
+                    if probe.returncode == 0:
+                        data = json.loads(probe.stdout)
+                        video_duration = float(data.get('format', {}).get('duration', 0))
+                except Exception:
+                    pass
+
+                # 2. Upload to Gemini File API (session-cached — URIs last ~48h)
+                _cache_key = None
+                try:
+                    _cache_key = str(Path(local_path).resolve())
+                except Exception:
+                    pass
+                _cached = getattr(self, '_cc_upload_cache', {})
+                if _cache_key and _cache_key in _cached:
+                    upload = _cached[_cache_key]
+                    status("♻️ Using cached upload (same video)")
+                else:
+                    status("☁️ Uploading video to Gemini...")
+                    upload = gen._upload_video(local_path, progress_callback=lambda m: status(m))
+                    if "error" not in upload and _cache_key:
+                        _cached[_cache_key] = upload
+                        self._cc_upload_cache = _cached
                 if "error" in upload:
                     self.root.after(0, lambda: self.cc_status_label.config(
                         text=f"❌ Upload failed: {upload.get('error')}", fg="red"))
@@ -2509,6 +2861,20 @@ class Dashboard:
                 # 3. Build the case commentary prompt (selected niche)
                 status("📝 Building analysis prompt...")
                 cc_slug = self._cc_selected_slug()
+                # ── Vertical / Shorts ⇒ force the STORY-CUT prompt ─────────
+                # Tool 2 runs "story-cut mode" (keep only stitched segments,
+                # drop the full source) whenever Vertical Format=Yes.  That
+                # mode is ONLY compatible with the long-video prompt, whose
+                # segments are 10-40s story beats budgeted to the target
+                # duration and whose commentary spots sit INSIDE the cut.  The
+                # teaser prompt's 5s flash-cuts + full-video commentary would
+                # be kept as ~25s of clips while minutes of narration get
+                # truncated to a stub.  So when vertical is on, use story-cut.
+                try:
+                    if bool(self.cc_vertical_var.get()):
+                        cc_slug = "case_commentary_longvideo"
+                except Exception:
+                    pass
                 prompt_template = gen.get_prompt_data(cc_slug)
                 if not prompt_template:
                     self.root.after(0, lambda: self.cc_status_label.config(
@@ -2518,6 +2884,72 @@ class Dashboard:
                 raw_template = prompt_template.get("narration_prompt", "")
                 prompt = raw_template.replace("{language}", lang)
                 prompt = prompt.replace("{niche_angle}", niche)
+                # Target-duration (MM:SS or minutes) for the long-video story cut.
+                try:
+                    _tgt_sec = self._cc_duration_to_sec(
+                        getattr(self, 'cc_duration_var',
+                                None).get()) if getattr(
+                        self, 'cc_duration_var', None) else 180
+                except (ValueError, AttributeError):
+                    _tgt_sec = 180
+                prompt = prompt.replace("{target_duration}",
+                                        str(_tgt_sec))
+
+                # ── Inject context / backstory and optional script ──
+                # ── Auto-context: video metadata from Excel ──
+                auto_ctx = self._cc_read_video_excel_metadata(local_path)
+                if auto_ctx:
+                    prompt += "📹 VIDEO METADATA (title, description, transcript — use this to understand the footage):\n" + auto_ctx + "\n"
+                if context:
+                    prompt += f"\n\n📖 CONTEXT / BACKSTORY (use this to shape the narrative):\n{context}\n"
+                if script_input:
+                    prompt += f"\n\n📝 OPTIONAL SCRIPT / DESCRIPTION (incorporate this into the narration where relevant):\n{script_input}\n"
+
+                # ── Inject word count constraint from voice model + tone calibration ──
+                # In story-cut / vertical mode the FINAL short is only
+                # ~target_duration long (the stitched segments), NOT the full
+                # source.  Budget the narration to the target, otherwise we'd
+                # tell Gemini to write minutes of script for a 3-min short and
+                # the voiceover overshoots the video massively.
+                _wc_dur = video_duration
+                try:
+                    if bool(self.cc_vertical_var.get()) and _tgt_sec > 0:
+                        _wc_dur = min(video_duration, _tgt_sec) if video_duration > 0 else _tgt_sec
+                except Exception:
+                    pass
+                if _wc_dur > 0:
+                    voice_model = getattr(self, 'cc_voice_model_var', None)
+                    tone_style = getattr(self, 'cc_tone_var', None)
+                    vm = voice_model.get() if voice_model else 'Zephyr'
+                    ts = tone_style.get() if tone_style else 'Storytelling'
+                    target_words = calc_target_word_count(_wc_dur, vm, ts)
+                    wc_hint = (
+                        f"\n\n📐 WORD COUNT CONSTRAINT (CRITICAL):\n"
+                        f"The final short is ~{_wc_dur:.1f} seconds long. "
+                        f"Your narration must fit within this duration at natural speaking pace.\n"
+                        f"Voice model: {vm} (~{_VOICE_WPM.get(vm, 105)} WPM at 1.0x)\n"
+                        f"Tone/style: {ts} (pacing factor {_TONE_PACING.get(ts, 0.85):.2f})\n"
+                        f"Target total word count for the entire script: ~{target_words} words.\n"
+                        f"Distribute this budget across the summary, clips, and commentary spots.\n"
+                        f"DO NOT exceed {target_words} words total."
+                    )
+                    prompt += wc_hint
+
+                # Qwen3 mode: reduce word limits so Gemini writes shorter text
+                if getattr(self, 'cc_tts_engine_var', None) is not None and self.cc_tts_engine_var.get() == "qwen3":
+                    replacements = {
+                        "15-20 seconds (40-55 words)": "15-20 seconds (30-40 words)",
+                        "max 12 words": "max 8 words",
+                        "max 15 words": "max 10 words",
+                        "40 to 55 words": "30 to 40 words",
+                        "8-15 seconds (25-45 words)": "8-15 seconds (20-30 words)",
+                        "25 to 45 words": "20 to 30 words",
+                        "200 WPM": "135 WPM",
+                    }
+                    # max 10 words → max 7 words (only for CCTV, after generic max 12→8 so unmatched ones survive)
+                    replacements["max 10 words"] = "max 7 words"
+                    for old, new in replacements.items():
+                        prompt = prompt.replace(old, new)
 
                 # 4. Call Gemini with the uploaded video
                 status("🤖 Gemini analyzing video... This may take a minute.")
@@ -2556,8 +2988,10 @@ class Dashboard:
         threading.Thread(target=task, daemon=True).start()
 
     def _cc_parse_response(self, text):
-        """Parse Gemini's structured output into {summary, clips, spots}."""
-        result = {"summary": "", "clips": [], "spots": []}
+        """Parse Gemini's structured output into {summary, clips, spots, voiceover_style, voiceover_speed}."""
+        result = {"summary": "", "summary_emotion": "", "disclaimer": "", "clips": [], "spots": [],
+                  "voiceover_style": "", "voiceover_speed": 0,
+                  "thumbnail_ts": "", "thumbnail_sec": 0, "thumbnail_text": ""}
 
         if not text:
             return result
@@ -2578,7 +3012,26 @@ class Dashboard:
                 # Extract the text after the header
                 content = chunk.split("\n", 1)
                 if len(content) > 1:
-                    result["summary"] = content[1].strip()
+                    raw = content[1].strip()
+                    # Optional leading [emotion] tag on the summary
+                    emo_match = re.match(r'^\[(\w+)\]\s*(.*)', raw, re.DOTALL)
+                    if emo_match:
+                        result["summary_emotion"] = emo_match.group(1).strip().lower()
+                        result["summary"] = emo_match.group(2).strip()
+                    else:
+                        result["summary"] = raw
+
+            elif upper.startswith("DISCLAIMER"):
+                current_section = "disclaimer"
+                content = chunk.split("\n", 1)
+                if len(content) > 1:
+                    raw = content[1].strip()
+                    # Parse: [DISCLAIMER] text
+                    disc_match = re.match(r'^\[DISCLAIMER\]\s*(.*)', raw, re.DOTALL)
+                    if disc_match:
+                        result["disclaimer"] = disc_match.group(1).strip()
+                    else:
+                        result["disclaimer"] = raw
 
             elif upper.startswith("MONTAGE CLIPS") or upper.startswith("CLIPS"):
                 current_section = "clips"
@@ -2615,16 +3068,44 @@ class Dashboard:
                         line = line.strip()
                         if not line or line.startswith("-") or line.startswith("="):
                             continue
-                        # Parse: MM:SS | commentary text
-                        match = re.match(r'(\d{1,2}:\d{2})\s*[|\|]\s*(.+)', line)
+                        # Parse: MM:SS | [emotion] | commentary text
+                        # or legacy: MM:SS | commentary text
+                        match = re.match(
+                            r'(\d{1,2}:\d{2})\s*[|\|]\s*'
+                            r'(?:\[(\w+)\]\s*[|\|]\s*)?(.+)',
+                            line)
                         if match:
-                            ts, text_val = match.groups()
+                            ts, emotion, text_val = match.groups()
                             result["spots"].append({
                                 "timestamp": ts,
                                 "seconds": self._ts_to_sec(ts),
+                                "emotion": (emotion or '').strip().lower(),
                                 "text": text_val.strip(),
                             })
                     break
+
+        # Extract voiceover style/speed from the full text (may appear after
+        # the COMMENTARY SPOTS section, with or without --- wrapper)
+        vo_match = re.search(
+            r'VOICEOVER\s+STYLE:\s*(.+?)\s*\n'
+            r'VOICEOVER\s+SPEED:\s*(\d+)',
+            text, re.IGNORECASE
+        )
+        if vo_match:
+            result["voiceover_style"] = vo_match.group(1).strip()
+            result["voiceover_speed"] = int(vo_match.group(2))
+
+        # Thumbnail pick (may appear anywhere; parsed from full text so the
+        # early `break` in the section loop above can't swallow it).
+        #   THUMBNAIL: MM:SS | catchy overlay text
+        thumb_match = re.search(
+            r'THUMBNAIL\s*:?\s*(\d{1,2}:\d{2})\s*[|\|]\s*(.+)',
+            text, re.IGNORECASE)
+        if thumb_match:
+            t_ts = thumb_match.group(1).strip()
+            result["thumbnail_ts"] = t_ts
+            result["thumbnail_sec"] = self._ts_to_sec(t_ts)
+            result["thumbnail_text"] = thumb_match.group(2).strip()
 
         return result
 
@@ -2633,6 +3114,26 @@ class Dashboard:
         """Convert MM:SS to seconds."""
         parts = ts.split(":")
         return int(parts[0]) * 60 + int(parts[1])
+
+    @staticmethod
+    def _cc_duration_to_sec(val):
+        """Parse a duration string to seconds.
+        Accepts:
+        - "MM:SS"  (e.g. "2:50", "03:00")
+        - number string representing minutes (e.g. "3" = 180s)
+        Default: 180s.
+        """
+        val = str(val).strip()
+        if ':' in val:
+            parts = val.split(':')
+            try:
+                return int(parts[0]) * 60 + int(parts[1])
+            except (ValueError, IndexError):
+                return 180
+        try:
+            return int(float(val) * 60)
+        except ValueError:
+            return 180
 
     def _cc_display_result(self, parsed):
         """Populate the result widgets with parsed data."""
@@ -2669,14 +3170,19 @@ class Dashboard:
             self.cc_spots_tree.delete(row)
         spots = parsed.get("spots", [])
         for i, spot in enumerate(spots, 1):
+            emotion = spot.get("emotion", "") or ""
             self.cc_spots_tree.insert("", tk.END, values=(
-                i, spot["timestamp"], spot["text"]
+                i, spot["timestamp"], emotion, spot["text"]
             ))
 
         # Full output
         self.cc_full_text.delete("1.0", tk.END)
         self.cc_full_text.insert(tk.END, "=== CASE SUMMARY ===\n")
         self.cc_full_text.insert(tk.END, summary + "\n\n")
+        disclaimer = parsed.get("disclaimer", "")
+        if disclaimer:
+            self.cc_full_text.insert(tk.END, "=== DISCLAIMER ===\n")
+            self.cc_full_text.insert(tk.END, f"[DISCLAIMER] {disclaimer}\n\n")
         self.cc_full_text.insert(tk.END, "=== MONTAGE CLIPS ===\n")
         for clip in clips:
             self.cc_full_text.insert(tk.END,
@@ -2684,13 +3190,65 @@ class Dashboard:
                 f"({clip['duration']:.1f}s)\n")
         self.cc_full_text.insert(tk.END, "\n=== COMMENTARY SPOTS ===\n")
         for spot in spots:
+            emo = spot.get("emotion", "") or ""
             self.cc_full_text.insert(tk.END,
-                f"{spot['timestamp']} | {spot['text']}\n")
+                f"{spot['timestamp']} | {emo} | {spot['text']}\n" if emo
+                else f"{spot['timestamp']} | {spot['text']}\n")
 
         # Select Summary tab by default
         self.cc_result_notebook.select(0)
 
     # ── Excel export ─────────────────────────────────────────────
+
+    # ── Auto-context: read video metadata from Excel ───────────────────
+
+    def _cc_read_video_excel_metadata(self, video_path):
+        try:
+            from pathlib import Path
+            import openpyxl
+            vpath = Path(video_path)
+            folder = vpath.parent
+            vid = vpath.stem
+            excel_files = list(folder.glob("results_clean_*.xlsx"))
+            if not excel_files:
+                return ""
+            wb = openpyxl.load_workbook(excel_files[0], read_only=True, data_only=True)
+            ws = wb.active
+            if not ws:
+                return ""
+            headers = {str(ws.cell(1, c).value or "").strip().lower(): c
+                       for c in range(1, ws.max_column + 1)}
+            col_vid       = headers.get("video id", 0)
+            col_title     = headers.get("title", 0)
+            col_desc      = headers.get("description", 0)
+            col_transcript = headers.get("speech transcript", 0)
+            col_captions  = headers.get("captions", 0)
+            if not col_vid:
+                return ""
+            for row in range(2, ws.max_row + 1):
+                row_vid = str(ws.cell(row, col_vid).value or "").strip()
+                if row_vid == vid:
+                    title       = str(ws.cell(row, col_title).value or "") if col_title else ""
+                    description = str(ws.cell(row, col_desc).value or "") if col_desc else ""
+                    transcript  = str(ws.cell(row, col_transcript).value or "") if col_transcript else ""
+                    captions    = str(ws.cell(row, col_captions).value or "") if col_captions else ""
+                    parts = []
+                    if title:
+                        parts.append("📌 TITLE:\n" + title)
+                    if description:
+                        parts.append("📄 DESCRIPTION:\n" + description)
+                    if transcript:
+                        parts.append("🎙️ SPEECH TRANSCRIPT:\n" + transcript)
+                    if captions:
+                        parts.append("💬 CAPTIONS:\n" + captions)
+                    wb.close()
+                    if parts:
+                        return "\n\n".join(parts)
+                    return ""
+            wb.close()
+        except Exception:
+            pass
+        return ""
 
     def _cc_save_excel(self):
         """Save the case commentary script to Excel — same format as other tabs."""
@@ -2709,39 +3267,68 @@ class Dashboard:
         lang = self.cc_lang_var.get().strip()
         niche = self.cc_niche_var.get().strip()
 
+        # Determine file prefix based on selected niche slug
+        _slug = self._cc_selected_slug()
+        _prefix = "CCTV" if "cctv" in _slug.lower() else "CC"
+
+        # Extract video ID from URL / file path
+        _vid_id = _extract_yt_id(url) or (_extract_video_id(Path(url).name) if url else "unknown")
+
+        # Vertical / shorts reframe flag for Tool 2 (Video Automation Studio).
+        # Explicit checkbox wins; otherwise the long-video story-cut slug implies vertical.
+        try:
+            _vertical = bool(self.cc_vertical_var.get())
+        except Exception:
+            _vertical = False
+        try:
+            if self._cc_selected_slug() == "case_commentary_longvideo":
+                _vertical = True
+        except Exception:
+            pass
+        vertical_flag = "Yes" if _vertical else "No"
+
         path = filedialog.asksaveasfilename(
             title="Save Case Commentary to Excel",
             defaultextension=".xlsx",
             filetypes=[("Excel files", "*.xlsx")],
             initialdir=str(Path(__file__).parent.parent / "channels"),
-            initialfile=f"CaseCommentary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            initialfile=f"{_prefix}_{_vid_id}_{lang}.xlsx"
         )
         if not path:
             return
 
-        # Build the script in standard [timestamp] | text | (words) | [beat] format
+        # Build the script in standard [timestamp] | [emotion] | text | (words) | [beat] format
         script_lines = []
 
         # Line 1: the summary at 00:00 as the hook/opening
         summary = self._cc_last_result.get("summary", "")
+        summary_emo = self._cc_last_result.get("summary_emotion", "") or ""
         summary_words = len(summary.split())
+        emo_part = f"| [{summary_emo}] " if summary_emo else "| "
         script_lines.append(
-            f"[00:00] | {summary} | ({summary_words} words) | [hook]"
+            f"[00:00] {emo_part}{summary} | ({summary_words} words) | [hook]"
         )
 
-        # Subsequent lines: commentary spots in chronological order
-        spots = sorted(self._cc_last_result.get("spots", []), key=lambda s: s.get("seconds", 0))
-        for spot in spots:
-            ts = spot.get("timestamp", "00:00")
-            text = spot.get("text", "")
-            wc = len(text.split())
-            tag = "cta" if text.strip().upper().startswith("CTA:") else "commentary"
+        # Line 2: disclaimer (right after the hook, before commentary)
+        disclaimer = self._cc_last_result.get("disclaimer", "")
+        if disclaimer:
+            disc_words = len(disclaimer.split())
             script_lines.append(
-                f"[{ts}] | {text} | ({wc} words) | [{tag}]"
+                f"[00:05] | [disclaimer] {disclaimer} | ({disc_words} words) | [disclaimer]"
             )
 
+        # NOTE: Commentary spots are NOT embedded here — they go into the
+        # separate "Commentary Spots" column below.  Putting them in both
+        # the Custom Script AND Commentary Spots columns makes Tool 2 speak
+        # each spot twice (once from the TTS of this script, once from the
+        # Commentary Spots TTS pipeline).  The Commentary Spots column is
+        # the single source of truth for spots.  Custom Script = summary only.
+        # Add a [00:10] placeholder to leave room for disclaimer/future lines.
+
         full_script = "\n".join(script_lines)
-        total_words = sum(len(s.split()) for s in [summary] + [sp["text"] for sp in spots])
+        disc_words = len(disclaimer.split()) if disclaimer else 0
+        _cc_spots = self._cc_last_result.get("spots", [])
+        total_words = sum(len(s.split()) for s in [summary] + [sp["text"] for sp in _cc_spots]) + disc_words
 
         # Montage clips — parsed by the video editing tool to create the intro
         clips_ref = "; ".join(
@@ -2766,10 +3353,15 @@ class Dashboard:
             vid_match = re.search(r'(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})', url)
             if vid_match:
                 video_id = vid_match.group(1)
+        # Fallback: extract video ID from local file path when no URL
+        if not video_id:
+            _local_vid = getattr(self, "_cc_file_path", "") or getattr(self, "_cc_local_video", "") or ""
+            if _local_vid:
+                video_id = _extract_video_id(Path(_local_vid).name)
 
         # Lightweight title fetch via yt-dlp (no download, cached by yt-dlp)
         title = ""
-        if video_id and ("youtube.com" in url or "youtu.be" in url):
+        if video_id and (("youtube.com" in url or "youtu.be" in url) or not url):
             try:
                 import yt_dlp
                 with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'noplaylist': True}) as ydl:
@@ -2777,6 +3369,30 @@ class Dashboard:
                     title = info.get("title", "") or ""
             except Exception:
                 pass  # non-critical — title stays empty and user can fill manually
+
+        # ── Thumbnail: extract the Gemini-chosen frame next to the Excel ──
+        thumb_ts = self._cc_last_result.get("thumbnail_ts", "") or ""
+        thumb_text = self._cc_last_result.get("thumbnail_text", "") or ""
+        thumb_frame_path = ""
+        if thumb_ts:
+            try:
+                _local_vid = getattr(self, "_cc_local_video", "") or ""
+                if _local_vid and Path(_local_vid).is_file():
+                    _sec = self._cc_last_result.get("thumbnail_sec", 0) or 0
+                    _frame_out = Path(path).with_name(
+                        f"{(video_id or 'thumb')}_thumbframe.jpg")
+                    import subprocess as _sp
+                    _sp.run(
+                        ['ffmpeg', '-y', '-loglevel', 'error',
+                         '-ss', str(_sec), '-i', str(_local_vid),
+                         '-frames:v', '1', '-q:v', '2', str(_frame_out)],
+                        check=True, capture_output=True, timeout=60)
+                    if _frame_out.is_file() and _frame_out.stat().st_size > 0:
+                        thumb_frame_path = str(_frame_out)
+            except Exception as _te:
+                # Non-critical — the time/text still ship; Tool 2 can grab
+                # the frame itself from the video if needed.
+                print(f"[thumbnail] frame extract failed: {_te}")
 
         rows = [{
             "Video ID": video_id,
@@ -2789,6 +3405,12 @@ class Dashboard:
             "Word Count": total_words,
             "Montage Clips": clips_ref,
             "Commentary Spots": commentary_ref,
+            "Vertical Format": vertical_flag,
+            "Thumbnail Time": thumb_ts,
+            "Thumbnail Text": thumb_text,
+            "Thumbnail Frame": thumb_frame_path,
+            "Voiceover Style": self._cc_last_result.get("voiceover_style", ""),
+            "Voiceover Speed (WPM)": self._cc_last_result.get("voiceover_speed", 0),
             "Hashtag 1": "",
             "Hashtag 2": "",
             "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -3103,6 +3725,8 @@ class Dashboard:
             platform = 'instagram'
         elif 'facebook.com' in first_url or 'fb.com' in first_url:
             platform = 'facebook'
+        elif 'threads.com' in first_url or 'threads.net' in first_url:
+            platform = 'threads'
         elif 'bilibili.com' in first_url:
             platform = 'bilibili'
         elif 'youtube.com' in first_url or 'youtu.be' in first_url:
@@ -3320,6 +3944,8 @@ class Dashboard:
             platform = 'instagram'
         elif 'facebook.com' in url_lower or 'fb.com' in url_lower or 'fb.watch' in url_lower:
             platform = 'facebook'
+        elif 'threads.com' in url_lower or 'threads.net' in url_lower:
+            platform = 'threads'
         elif 'bilibili.com' in url_lower:
             platform = 'bilibili'
         elif 'youtube.com' in url_lower or 'youtu.be' in url_lower:
@@ -3488,37 +4114,32 @@ class Dashboard:
     def check_instagram_auth(self):
         """Check Instagram authentication status.
 
-        Reports the TRUTH from cookies.txt (the file yt-dlp downloads with),
-        not just the presence of ig_username.txt. A saved username with no
-        valid sessionid is NOT logged in — downloads would 401."""
-        from platforms.instagram import ig_session_status
+        Checks ALL cookie files (legacy cookies.txt + data/cookies/*.txt)
+        so the user sees how many accounts are available for rotation.
+        """
+        from platforms.instagram import ig_multi_status
 
-        username_file = Path(__file__).parent.parent / "data" / "ig_username.txt"
-        username = ""
-        if username_file.exists():
-            try:
-                with open(username_file, 'r') as f:
-                    username = f.read().strip()
-            except Exception:
-                username = ""
+        ms = ig_multi_status()
+        valid = [c for c in ms["accounts"] if c["logged_in"]]
+        total = len(ms["accounts"])
 
-        status = ig_session_status()
-
-        if status["logged_in"]:
-            who = f"@{username}" if username else (status.get("user_id") or "session")
-            self.auth_label.config(text=f"✅ Instagram: {who}")
-            self.ig_status_label.config(text=f"✅ Logged in as {who}", fg='green')
-            self.log(f"Instagram: Authenticated as {who} (valid session in cookies.txt)")
+        if valid:
+            count_str = f"{len(valid)} account{'s' if len(valid) > 1 else ''}"
+            first_user = valid[0].get("user_id") or ""
+            detail = f" ({count_str})" if len(valid) > 1 else ""
+            display = first_user if first_user else "session"
+            label = f"✅ Instagram: {display}{detail}"
+            self.auth_label.config(text=label[:45])
+            self.ig_status_label.config(text=label, fg='green')
+            self.log(f"✅ Instagram: {count_str} authenticated — auto-rotate on failure")
         else:
-            # Saved username but no usable session — be explicit about why
-            hint = status["reason"]
-            label = f"❌ Instagram: {hint}"
-            self.auth_label.config(text=label[:40])
-            self.ig_status_label.config(text=f"❌ Not logged in ({hint})", fg='red')
-            if username:
-                self.log(f"Instagram: @{username} saved but session invalid — {hint}. Re-login or import cookies.")
-            else:
-                self.log(f"Instagram: Not logged in — {hint}")
+            # Show why the first cookie failed as the reason
+            first = ms["accounts"][0] if ms["accounts"] else {"reason": "no cookie files"}
+            hint = first["reason"]
+            label = f"❌ Instagram: {hint}"[:40]
+            self.auth_label.config(text=label)
+            self.ig_status_label.config(text=f"❌ {hint}", fg='red')
+            self.log(f"Instagram: No valid session in {total} file(s) — {hint}")
 
     def _scrape_instagram_account(self):
         """Scrape ALL video URLs from an Instagram account using yt-dlp."""
@@ -3859,7 +4480,7 @@ class Dashboard:
 
                 # Target word count based on video duration (~160 WPM)
                 # so the script fills the clip naturally without overflow
-                target_wpm = 160
+                target_wpm = 110 if getattr(self, 'tts_engine_var', None) is not None and self.tts_engine_var.get() == "qwen3" else 160
                 word_count = int(duration * target_wpm / 60) if duration > 0 else len(transcript.split())
                 wpm = round(word_count / (duration / 60), 1) if duration > 0 else 0.0
 
@@ -3913,6 +4534,8 @@ class Dashboard:
                     "Custom Title": re.sub(r'#\S+\s*', '', sug_title).strip(),
                     "Custom Description": gen_description,
                     "Custom Script": gen_script,
+                    "Voiceover Style": result.get("voiceover_style", ""),
+                    "Voiceover Speed (WPM)": result.get("voiceover_speed", ""),
                 })
 
                 updated_count += 1
@@ -4012,6 +4635,7 @@ class Dashboard:
         "courtroom_legal",
         "heartwarming",
         "cctv_surveillance",
+		"ocean_mysteries",
     ]
 
     # Per-preset help: shown in the "About this preset" panel.
@@ -4094,6 +4718,15 @@ class Dashboard:
             "ending on a freeze-frame CTA.\n"
             "EXAMPLE: \"00:00 | Nobody noticed what he was actually doing. | [hook]\" → "
             "full narration → \"...What would you have done? Comment below. | [cta]\""
+        ),
+        "ocean_mysteries": (
+            "WHEN: Ocean/maritime compilation footage — storms, ships, dark seas, "
+            "haunted vessels, near-disasters.\n"
+            "DOES: Gemini watches the whole compilation, identifies every clip and the "
+            "unifying theme, then narrates each scene with a two-line formula: "
+            "what happens (action) + what it means (moral/lesson).\n"
+            "EXAMPLE: \"A cargo ship vanishes behind a wave the size of a building. | [observe]\" → "
+            "\"The ocean does not care how confident you were before you left the shore. | [lesson]\""
         ),
     }
 

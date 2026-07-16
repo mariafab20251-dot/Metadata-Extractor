@@ -367,11 +367,14 @@ Hashtags:  {data['hashtags'] or '(None)'}
             ("hashtag_2", "Hashtag 2"),
             ("generated_script", "Generated Script"),
             ("generated_word_count", "Generated Word Count"),
+            ("voiceover_style", "Voiceover Style"),
+            ("voiceover_speed", "Voiceover Speed (WPM)"),
         ]
 
         COL_WIDTHS = {
             "A": 15, "B": 50, "C": 80, "D": 12, "E": 10,
             "F": 50, "G": 20, "H": 20, "I": 80, "J": 15,
+            "K": 50, "L": 18,
         }
 
         if not output_path and channel_name:

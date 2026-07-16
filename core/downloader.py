@@ -23,7 +23,7 @@ def suppress_output():
 class VideoDownloader:
     # Platforms that should save files as "{video_id}.ext" (no title in the
     # filename) — their IDs are stable and titles add noise / length issues.
-    ID_ONLY_PLATFORMS = {'youtube', 'instagram', 'facebook', 'tiktok'}
+    ID_ONLY_PLATFORMS = {'youtube', 'instagram', 'facebook', 'tiktok', 'threads'}
 
     def __init__(self, platform, channel_folder=None):
         self.platform = platform
@@ -35,11 +35,59 @@ class VideoDownloader:
             self.audio_dir = VIDEOS_DIR.parent / "audio" / platform
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.audio_dir.mkdir(parents=True, exist_ok=True)
+        # Legacy single cookies.txt for non-Instagram platforms
         self.cookies_file = VIDEOS_DIR.parent / "cookies.txt"
+        # Multi-account cookie rotation state
+        self._cookie_index = 0
+        self._cookie_cache = None
 
     def _id_only(self):
         """True when this platform should name files by video ID only."""
         return (self.platform or '').lower() in self.ID_ONLY_PLATFORMS
+
+    # ── Multi-account cookie rotation ──────────────────────────────
+    def _all_cookie_candidates(self):
+        """Return all cookie files in priority order for Instagram.
+
+        Legacy data/cookies.txt first, then data/cookies/*.txt sorted by name.
+        Cached for the lifetime of this downloader instance.
+        """
+        from platforms.instagram import COOKIES_DIR
+        if self._cookie_cache is not None:
+            return self._cookie_cache
+        candidates = []
+        legacy = VIDEOS_DIR.parent / "cookies.txt"
+        if legacy.exists():
+            candidates.append(legacy)
+        if COOKIES_DIR.exists():
+            for f in sorted(COOKIES_DIR.glob("*.txt")):
+                candidates.append(f)
+        self._cookie_cache = candidates
+        return candidates
+
+    def _pick_instagram_cookie(self):
+        """Return Path to the best currently-unused Instagram cookie, or None."""
+        from platforms.instagram import _check_cookie_file
+        for path in self._all_cookie_candidates():
+            status = _check_cookie_file(path)
+            if status["logged_in"]:
+                return path
+        return None
+
+    def _next_instagram_cookie(self, failed_path=None):
+        """Mark a cookie as failed and return the next valid one."""
+        # Mark the failed cookie path as used by bumping our index
+        candidates = self._all_cookie_candidates()
+        if failed_path and failed_path in candidates:
+            idx = candidates.index(failed_path)
+            self._cookie_index = max(self._cookie_index, idx + 1)
+        # Find the next valid one from current index
+        from platforms.instagram import _check_cookie_file
+        for i in range(self._cookie_index, len(candidates)):
+            status = _check_cookie_file(candidates[i])
+            if status["logged_in"]:
+                return candidates[i]
+        return None
 
     @staticmethod
     def _sanitize_filename(name):
@@ -60,6 +108,16 @@ class VideoDownloader:
 
         if output_path.exists():
             return str(output_path)
+
+        # Threads: yt-dlp has no Threads extractor, so download via Instagram API
+        if self.platform == 'threads':
+            print(f"Downloading Threads video via Instagram CDN...")
+            from platforms.threads import ThreadsScraper
+            scraper = ThreadsScraper()
+            try:
+                return scraper.download_video(url, str(output_path), progress_callback=progress_callback)
+            except Exception as e:
+                raise Exception(f"Threads download failed: {e}")
 
         # Normalise rednote.com → xiaohongshu.com for yt-dlp, which has
         # a XiaohongshuIE extractor but no extractor for the rednote.com
@@ -89,23 +147,32 @@ class VideoDownloader:
 
         print(f"📥 Downloading: {yt_url}")
 
-        # Instagram preflight: yt-dlp needs a valid sessionid in cookies.txt.
-        # Without it Instagram returns an "empty media response" (looks logged
-        # out). Check up front and tell the user exactly what to do.
+        # Instagram preflight: check that at least one cookie file has a valid
+        # Instagram sessionid. The actual cookie used is selected by
+        # _pick_instagram_cookie below and can rotate on login failure.
         if 'instagram.com' in yt_url:
-            try:
-                from platforms.instagram import ig_session_status
-                ig = ig_session_status(self.cookies_file)
-                if not ig["logged_in"]:
-                    raise RuntimeError(
-                        "❌ Instagram not logged in — "
-                        f"{ig['reason']}.\n\n"
-                        "FIX: Open Settings → Instagram and Login again, "
-                        "or import fresh cookies. The login token (sessionid) "
-                        f"must be present in:\n  {self.cookies_file}"
-                    )
-            except ImportError:
-                pass  # platforms not importable (standalone use) — let yt-dlp try
+            if not self._all_cookie_candidates():
+                raise RuntimeError(
+                    "❌ No Instagram cookie files found.\n\n"
+                    "At least one is required:\n"
+                    "  • data/cookies.txt (legacy)\n"
+                    "  • data/cookies/*.txt (multi-account)\n"
+                    "FIX: Use Settings → Instagram → Extract Browser Cookies\n"
+                    "or Export your Instagram cookies from your browser."
+                )
+            cookie_path = self._pick_instagram_cookie()
+            if not cookie_path:
+                from platforms.instagram import ig_multi_status
+                ms = ig_multi_status()
+                reasons = "\n".join(
+                    f"    [{c['file'].name}] {c['reason']}"
+                    for c in ms["accounts"]
+                )
+                raise RuntimeError(
+                    "❌ All Instagram cookies are invalid.\n\n"
+                    f"Checked {len(ms['accounts'])} file(s):\n{reasons}\n\n"
+                    "FIX: Open Settings → Instagram → Login or Extract Browser Cookies."
+                )
 
         # Bilibili needs extra headers (Referer) or it returns 412
         if 'bilibili.com' in yt_url:
@@ -168,8 +235,12 @@ class VideoDownloader:
             'progress_hooks': [_progress_hook] if progress_callback else [],
         }
 
-        # Add cookies if file exists
-        if self.cookies_file.exists():
+        # Add cookies if file exists — use multi-cookie rotation for Instagram
+        if 'instagram.com' in yt_url:
+            cookie_path = self._pick_instagram_cookie()
+            if cookie_path:
+                ydl_opts['cookiefile'] = str(cookie_path)
+        elif self.cookies_file.exists():
             ydl_opts['cookiefile'] = str(self.cookies_file)
 
         # Retry loop for transient HTTP errors (especially PornHub 474)
@@ -289,19 +360,33 @@ class VideoDownloader:
                             "Please export Facebook cookies from your browser."
                         )
 
-                # Instagram-specific errors
+                # Instagram-specific errors — try next cookie before giving up
                 if 'instagram.com' in url:
-                    if not self.cookies_file.exists():
-                        raise Exception(
-                            f"❌ Instagram requires cookies.txt!\n"
-                            f"Place cookies at: {self.cookies_file}"
-                        )
                     if 'empty media response' in error_msg.lower() or 'login' in error_msg.lower():
+                        # Try the next cookie in rotation
+                        current_path_str = ydl_opts.get('cookiefile', '')
+                        current_cookie = Path(current_path_str) if current_path_str else None
+                        next_cookie = self._next_instagram_cookie(current_cookie)
+                        if next_cookie:
+                            print(f"   🔄 Instagram session rejected — trying next cookie ({next_cookie.name})")
+                            ydl_opts['cookiefile'] = str(next_cookie)
+                            last_pct = [0]  # reset progress tracking for retry
+                            continue  # retry outer yt-dlp loop with next cookie
+                        # All cookies exhausted — give final error
+                        from platforms.instagram import ig_multi_status
+                        ms = ig_multi_status()
+                        accounts_summary = ", ".join(
+                            f"{c['file'].name}={c['reason']}"
+                            for c in ms["accounts"]
+                        )
                         raise Exception(
-                            "❌ Instagram served a logged-out response (empty media).\n\n"
-                            "Your sessionid is missing or expired. FIX:\n"
-                            "• Settings → Instagram → Login again, or import fresh cookies\n"
-                            f"• The login token must be in: {self.cookies_file}"
+                            "❌ All Instagram accounts failed (empty media / logged out).\n\n"
+                            f"Checked {len(ms['accounts'])} file(s): {accounts_summary}\n\n"
+                            "FIX:\n"
+                            "• Settings → Instagram → Login or Extract Browser Cookies\n"
+                            "• If one account was just locked, add backup accounts:\n"
+                            f"    Save additional cookie files in data/cookies/instagram_2.txt, etc.\n"
+                            "  and this system will auto-rotate through them."
                         )
                     if 'No video formats found' in error_msg:
                         raise Exception(

@@ -16,6 +16,53 @@ import io
 import requests
 from pathlib import Path
 
+# ═══════════════════════════════════════════════════════════════
+# TTS Calibration — voice model WPM + tone pacing factors
+# Used by Script Studio & Case Commentary to constrain Gemini's
+# script length so the narration fits the video at 1.2x speed.
+# ═══════════════════════════════════════════════════════════════
+
+# Natural speaking rate (WPM) of each voice at 1.0x speed.
+_VOICE_WPM = {
+    'Zephyr': 105,
+    'Achernar': 112,
+    'Gemma': 108,
+    'en-US-Studio-Q': 150,
+    'en-US-Studio-O': 145,
+    'en-US-Studio-D': 140,
+}
+
+# Tone/Style pacing factor — how each tone changes speaking pace.
+_TONE_PACING = {
+    'Storytelling': 0.85,
+    'Deep Storytelling': 0.80,
+    'Dramatic Storytelling': 0.78,
+    'Warm': 0.95,
+    'Sad': 0.75,
+    'Suspense': 0.85,
+    'Motivational': 1.15,
+    'Dramatic': 0.80,
+    'Happy': 1.15,
+    'Authoritative': 1.05,
+    'Romantic': 0.80,
+    'Mysterious': 0.80,
+    'Excited': 1.20,
+    'Humorous': 1.10,
+}
+
+# User's preferred TTS base speed (1.2x sounds natural for Gemini TTS)
+_BASE_TTS_SPEED = 1.2
+
+
+def calc_target_word_count(video_duration_sec: float,
+                           voice_model: str = 'Zephyr',
+                           tone_style: str = 'Storytelling') -> int:
+    """Calculate how many words fit in the video at 1.2x base speed
+    with the given voice model (natural WPM) and tone (pacing factor)."""
+    wpm_at_1x = _VOICE_WPM.get(voice_model, 105)
+    tone_factor = _TONE_PACING.get(tone_style, 0.85)
+    effective_wpm = wpm_at_1x * _BASE_TTS_SPEED * tone_factor
+    return max(10, int((video_duration_sec / 60.0) * effective_wpm))
 
 class ScriptGenerator:
     """Generate cinematic narration scripts from transcripts via Gemini API"""
@@ -71,9 +118,17 @@ class ScriptGenerator:
                 "the full video in grounded third-person, ending on a "
                 "freeze-frame CTA",
         },
+        "ocean_mysteries": {
+            "file": "Ocean Mysteries Master Prompt.txt",
+            "name": "Ocean Mysteries",
+            "description":
+                "Ocean and maritime footage — storms, ships, dark seas, "
+                "haunted vessels — narrated with deep-sea philosophical "
+                "tone, scene-by-scene action + moral insight",
+        },
     }
 
-    # Built-in fallback narration prompt (used if no config file found)
+
     BUILTIN_NARRATION_PROMPT = """You are a professional script writer for the YouTube channel 'Continue'.
 
 Your task is to convert the following raw transcript into a CINEMATIC THIRD-PERSON NARRATION.
@@ -497,6 +552,21 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 base = (f"IMPORTANT: Write the ENTIRE narration script in {lang_name}. "
                         f"Every sentence, every word must be in {lang_name} — do NOT use English.\n\n"
                         f"{base}")
+            # Append overall voiceover style instruction (replaces old per-line emotion tags)
+            base += (
+                "\n\nVOICEOVER STYLE (overall tone — NOT per-line emotions):\n"
+                "Do NOT assign different emotions to each line. Instead, decide ONE overall\n"
+                "emotional tone that fits the ENTIRE narrative based on the video's context.\n"
+                "\n"
+                "Then, at the END of your script, add these two lines on their own:\n"
+                "---\n"
+                "VOICEOVER STYLE: <one sentence describing the overall narrator tone, e.g. 'Read aloud in a warm, welcoming tone.' or 'Dark suspense with storytelling flow.'>\n"
+                "VOICEOVER SPEED: <recommended speaking speed in WPM for this content, 140-220 range>\n"
+                "---\n"
+                "ONLY if a specific line genuinely requires a different emotion may you add\n"
+                "a per-line [emotion] tag (e.g. [whisper], [dramatic], [urgent]), but this\n"
+                "should be RARE — not your default. The default is the overall style above.\n"
+            )
             return base
 
     def _format_metadata_prompt(self, transcript, script, niche_angle, language="english"):
@@ -1049,6 +1119,8 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
             if not script:
                 return {"error": "Failed to generate script from Gemini."}
 
+            # Parse voiceover style/speed from Gemini output, then strip formatting
+            script, voiceover_style, voiceover_speed = self._parse_voiceover_metadata(script)
             script = self._clean_script(script)
             generated_word_count = len(script.split())
 
@@ -1062,6 +1134,8 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 "hashtag_1": metadata.get("hashtag_1", ""),
                 "hashtag_2": metadata.get("hashtag_2", ""),
                 "generated_word_count": generated_word_count,
+                "voiceover_style": voiceover_style,
+                "voiceover_speed": voiceover_speed,
             }
 
         except Exception as e:
@@ -1104,6 +1178,56 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
         # Collapse multiple blank lines into one
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text.strip()
+
+    @staticmethod
+    def _parse_voiceover_metadata(text):
+        """Extract VOICEOVER STYLE and VOICEOVER SPEED from Gemini output, then strip them.
+
+        The new prompts ask Gemini to append at the end:
+            ---
+            VOICEOVER STYLE: <description>
+            VOICEOVER SPEED: <WPM>
+            ---
+
+        Returns:
+            tuple: (clean_text, voiceover_style, voiceover_speed_wpm)
+        """
+        style = ""
+        speed = 0
+
+        # Match the VOICEOVER block at the end of the text
+        m = re.search(
+            r'(?P<before>.*?)'
+            r'[-]{3,}\s*\n'
+            r'VOICEOVER\s+STYLE:\s*(.+?)\s*\n'
+            r'VOICEOVER\s+SPEED:\s*(\d+).*?'
+            r'(?:\n[-]{3,})?'
+            r'\s*$',
+            text, re.DOTALL
+        )
+        if m:
+            style = m.group(2).strip()
+            speed = int(m.group(3))
+            text = m.group(1).strip()
+        else:
+            # Fallback: line-by-line extraction (no --- wrapper)
+            lines = text.split('\n')
+            clean_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped.upper().startswith('VOICEOVER STYLE:'):
+                    style = stripped.split(':', 1)[1].strip()
+                elif stripped.upper().startswith('VOICEOVER SPEED:'):
+                    speed_str = stripped.split(':', 1)[1].strip()
+                    try:
+                        speed = int(''.join(c for c in speed_str if c.isdigit()))
+                    except ValueError:
+                        speed = 0
+                else:
+                    clean_lines.append(line)
+            text = '\n'.join(clean_lines).strip()
+
+        return text, style, speed
 
     def _generate_metadata(self, transcript, script, niche_angle, language="english"):
         """Generate a suggested title and two hashtags using the active prompt template"""
@@ -1156,7 +1280,7 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
 
     def generate_script_from_video(self, video_url=None, video_path=None, language="english",
                                    niche_angle="", style_preference="", context="",
-                                   transcript=None, progress_callback=None):
+                                   transcript=None, wpm=None, progress_callback=None):
         """Generate a narration script by having Gemini watch a video (visuals + audio).
 
         For YouTube URLs — Gemini watches natively via URL.
@@ -1210,8 +1334,16 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 if res.returncode == 0:
                     info = _json.loads(res.stdout)
                     video_duration = float(info.get("format", {}).get("duration", 0))
-                    # 165 WPM = comfortable cinematic narration pace
-                    target_word_count = int((video_duration / 60.0) * 165)
+                    # WPM: use calibration tables by default (Zephyr/Storytelling ~107 WPM
+                    # effective at 1.2x), caller overrides for slower engines (qwen3=110)
+                    if wpm:
+                        effective_wpm = wpm
+                        target_word_count = int((video_duration / 60.0) * effective_wpm)
+                    else:
+                        target_word_count = calc_target_word_count(video_duration,
+                                                                    'Zephyr', 'Storytelling')
+                        effective_wpm = (target_word_count / (video_duration / 60.0)
+                                         if video_duration > 0 else 107)
             except Exception:
                 pass  # non-critical — prompt falls back to "count by ear"
 
@@ -1222,6 +1354,7 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 style_preference=style_preference, context=context,
                 video_duration=video_duration,
                 target_word_count=target_word_count,
+                wpm=effective_wpm,
             )
 
             # Make the API call with the uploaded file
@@ -1230,9 +1363,12 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
             if "error" in result:
                 return result
 
-            script = result.get("text", "").strip()
-            if not script:
+            raw_script = result.get("text", "").strip()
+            if not raw_script:
                 return {"error": "Empty response from Gemini."}
+
+            # Parse voiceover style/speed from Gemini output, then strip formatting
+            script, voiceover_style, voiceover_speed = self._parse_voiceover_metadata(raw_script)
 
             generated_word_count = len(script.split())
 
@@ -1271,6 +1407,8 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 "hashtag_1": metadata.get("hashtag_1", ""),
                 "hashtag_2": metadata.get("hashtag_2", ""),
                 "generated_word_count": generated_word_count,
+                "voiceover_style": voiceover_style,
+                "voiceover_speed": voiceover_speed,
             }
 
         except Exception as e:
@@ -1410,7 +1548,7 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
 
     def _build_video_prompt(self, language, niche_angle, transcript=None,
                             style_preference="", context="",
-                            video_duration=0.0, target_word_count=0):
+                            video_duration=0.0, target_word_count=0, wpm=None):
         """Build the prompt for video-based script generation.
 
         If the active prompt is a master prompt (from Pormpts/) that has a
@@ -1458,7 +1596,7 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                     "\n"
                     + (f"VIDEO DURATION: {video_duration:.0f} seconds\n"
                        f"TARGET WORD COUNT: {target_word_count} words"
-                       f" — (calculated at 165 WPM for the full duration).\n"
+                       f" — (calculated at {wpm if wpm else 165} WPM for the full duration).\n"
                        f"Your script MUST hit this EXACT word count."
                        f" If you end up with more words than fit, the last lines get CUT OFF.\n"
                        f"\n" if video_duration > 0 and target_word_count > 0 else "")
@@ -1468,6 +1606,20 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                     "\n"
                     f"CONTEXT (optional but powerful):\n"
                     f"{context or '(No context provided)'}\n"
+                    "\n"
+                    "VOICEOVER STYLE (overall tone — NOT per-line emotions):\n"
+                    "Do NOT assign different emotions to each line. Watch the entire video,\n"
+                    "understand the context and niche, then decide ONE overall emotional tone\n"
+                    "that fits the ENTIRE narrative.\n"
+                    "\n"
+                    "At the END of your script, add these two lines on their own:\n"
+                    "---\n"
+                    "VOICEOVER STYLE: <one sentence describing the overall narrator tone, e.g. 'Read aloud in a warm, welcoming tone.' or 'Dark suspense with storytelling flow.'>\n"
+                    "VOICEOVER SPEED: <recommended speaking speed in WPM for this content, 140-220 range>\n"
+                    "---\n"
+                    "RARE EXCEPTION — ONLY if a specific line genuinely requires a different\n"
+                    "emotion may you add a per-line [emotion] tag like [whisper], [dramatic],\n"
+                    "or [urgent]. The default should be the overall style above.\n"
                 )
 
                 full_prompt = base + filled_input

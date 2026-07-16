@@ -3,32 +3,34 @@ import re
 import time
 from pathlib import Path
 
+# Multi-cookie support: store extra cookie files in data/cookies/.
+# The legacy data/cookies.txt is always checked first.
+COOKIES_DIR = Path(__file__).parent.parent / "data" / "cookies"
 
-def ig_session_status(cookies_path=None):
-    """Single source of truth for Instagram auth.
 
-    Reads data/cookies.txt (the ONE file yt-dlp downloads with) and reports
-    whether it holds a non-expired Instagram `sessionid`. Returns a dict:
-        {"logged_in": bool, "user_id": str|None, "reason": str}
+def _check_cookie_file(cookies_path):
+    """Check a single Netscape cookie file for a valid Instagram sessionid.
 
-    Both the GUI status line and the downloader use this so they can never
-    disagree again — no more "Authenticated as @x" while downloads 401.
+    Returns:
+        {"logged_in": bool, "user_id": str|None, "reason": str, "file": Path}
     """
     import http.cookiejar
     import time as _t
 
-    if cookies_path is None:
-        cookies_path = Path(__file__).parent.parent / "data" / "cookies.txt"
     cookies_path = Path(cookies_path)
-
     if not cookies_path.exists():
-        return {"logged_in": False, "user_id": None, "reason": "no cookies.txt"}
+        return {"logged_in": False, "user_id": None, "reason": "file not found",
+                "file": cookies_path}
+    if cookies_path.stat().st_size == 0:
+        return {"logged_in": False, "user_id": None, "reason": "file empty",
+                "file": cookies_path}
 
     try:
         jar = http.cookiejar.MozillaCookieJar(str(cookies_path))
         jar.load(ignore_expires=True, ignore_discard=True)
     except Exception as e:
-        return {"logged_in": False, "user_id": None, "reason": f"unreadable cookies.txt ({e})"}
+        return {"logged_in": False, "user_id": None,
+                "reason": f"unreadable ({e})", "file": cookies_path}
 
     sessionid = None
     ds_user_id = None
@@ -43,11 +45,95 @@ def ig_session_status(cookies_path=None):
             ds_user_id = c.value
 
     if not sessionid:
-        return {"logged_in": False, "user_id": ds_user_id, "reason": "no sessionid in cookies.txt"}
+        return {"logged_in": False, "user_id": ds_user_id,
+                "reason": "no sessionid", "file": cookies_path}
     if expires and expires < int(_t.time()):
-        return {"logged_in": False, "user_id": ds_user_id, "reason": "sessionid expired — re-login"}
+        return {"logged_in": False, "user_id": ds_user_id,
+                "reason": "expired", "file": cookies_path}
 
-    return {"logged_in": True, "user_id": ds_user_id, "reason": "ok"}
+    return {"logged_in": True, "user_id": ds_user_id,
+            "reason": "ok", "file": cookies_path}
+
+
+def find_instagram_cookies():
+    """Return list of all cookie files with a valid Instagram sessionid.
+
+    Scans the legacy data/cookies.txt first, then data/cookies/*.txt.
+    Returns paths sorted by priority (first = best, used first).
+    """
+    data_dir = Path(__file__).parent.parent / "data"
+    candidates = []
+
+    # Legacy single file
+    legacy = data_dir / "cookies.txt"
+    if legacy.exists():
+        candidates.append(legacy)
+
+    # Multi-account directory
+    if COOKIES_DIR.exists():
+        for f in sorted(COOKIES_DIR.glob("*.txt")):
+            candidates.append(f)
+
+    # Return only those that pass the check
+    valid = []
+    for path in candidates:
+        status = _check_cookie_file(path)
+        if status["logged_in"]:
+            valid.append((path, status))
+    return valid
+
+
+def ig_multi_status():
+    """Return status of ALL cookie files (not just the first valid).
+
+    Returns:
+        {"accounts": [...], "any_valid": bool, "count": int}
+    """
+    data_dir = Path(__file__).parent.parent / "data"
+    all_files = []
+
+    legacy = data_dir / "cookies.txt"
+    if legacy.exists():
+        all_files.append(legacy)
+
+    if COOKIES_DIR.exists():
+        for f in sorted(COOKIES_DIR.glob("*.txt")):
+            all_files.append(f)
+
+    checks = [_check_cookie_file(p) for p in all_files]
+    return {
+        "accounts": checks,
+        "any_valid": any(c["logged_in"] for c in checks),
+        "count": len([c for c in checks if c["logged_in"]]),
+    }
+
+
+def ig_session_status(cookies_path=None):
+    """Legacy single-file check (backward-compatible).
+
+    If no path is given, checks legacy data/cookies.txt first, then scans
+    the multi-account directory as fallback.
+    """
+    if cookies_path is not None:
+        return _check_cookie_file(cookies_path)
+
+    # Default: try legacy, then multi dir
+    data_dir = Path(__file__).parent.parent / "data"
+    legacy = data_dir / "cookies.txt"
+    if legacy.exists():
+        result = _check_cookie_file(legacy)
+        if result["logged_in"]:
+            return result
+
+    # Fallback: any valid one in multi dir
+    valid = find_instagram_cookies()
+    if valid:
+        return valid[0][1]
+
+    # None valid — return the legacy status (so the "why" reason is shown)
+    if legacy.exists():
+        return _check_cookie_file(legacy)
+    return {"logged_in": False, "user_id": None, "reason": "no cookie file found"}
 
 
 class InstagramScraper:

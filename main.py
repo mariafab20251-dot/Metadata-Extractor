@@ -19,6 +19,7 @@ from platforms.tiktok import TikTokScraper
 from platforms.youtube import YouTubeScraper
 from platforms.facebook import FacebookScraper
 from platforms.xiaohongshu import XiaohongshuScraper
+from platforms.threads import ThreadsScraper
 from datetime import datetime
 
 class VideoProcessor:
@@ -31,7 +32,8 @@ class VideoProcessor:
             'tiktok': TikTokScraper(),
             'youtube': YouTubeScraper(),
             'facebook': FacebookScraper(),
-            'xiaohongshu': XiaohongshuScraper()
+            'xiaohongshu': XiaohongshuScraper(),
+            'threads': ThreadsScraper(),
         }
         self.current_channel_folder = None
 
@@ -73,6 +75,12 @@ class VideoProcessor:
         elif platform == 'xiaohongshu':
             if 'xiaohongshu.com/user/profile/' in url_input or 'rednote.com/user/profile/' in url_input:
                 match = re.search(r'user/profile/([a-f0-9]+)', url_input)
+                if match:
+                    return match.group(1)[:20]
+
+        elif platform == 'threads':
+            if 'threads.com/' in url_input or 'threads.net/' in url_input:
+                match = re.search(r'threads\.(?:com|net)/@([^/]+)', url_input)
                 if match:
                     return match.group(1)[:20]
 

@@ -889,6 +889,18 @@ class Dashboard:
 
                 sa_path = config.get('service_account_path', '')
 
+                # Portable self-heal: the stored path may be an absolute path
+                # from the machine where the config was first created. If it
+                # does not exist here, fall back to the service-account key
+                # bundled next to this install (data/service-account-key.json).
+                try:
+                    from config import DATA_DIR
+                    bundled_sa = DATA_DIR / "service-account-key.json"
+                    if (not sa_path or not os.path.isfile(sa_path)) and bundled_sa.is_file():
+                        sa_path = str(bundled_sa)
+                except Exception:
+                    pass
+
                 self._saved_api_keys = keys
                 self._refresh_keys_listbox()
 

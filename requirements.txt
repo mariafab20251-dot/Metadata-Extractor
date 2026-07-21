@@ -14,6 +14,10 @@ curl_cffi>=0.15.0
 
 # Gemini script generator
 google-genai>=2.0.0
+# Service-account auth for Gemini (Case Commentary / Script Studio tabs).
+# REQUIRED — without these the AI tabs throw "google-auth library required".
+google-auth>=2.23.0
+google-auth-httplib2>=0.1.1
 
 # PyTorch is installed SEPARATELY — use CPU-only index:
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu

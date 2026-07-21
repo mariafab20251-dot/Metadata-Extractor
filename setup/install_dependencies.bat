@@ -84,7 +84,7 @@ echo.
 :: ── Step 4: Install remaining dependencies ──
 echo [4/4] Installing remaining dependencies (%VENV_DIR%)...
 echo.
-call "%VENV_DIR%\Scripts\pip.exe" install yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai curl_cffi -q
+call "%VENV_DIR%\Scripts\pip.exe" install yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai google-auth google-auth-httplib2 curl_cffi -q
 if !ERRORLEVEL! NEQ 0 (
     echo [ERROR] Failed to install some dependencies.
     echo         Check your internet connection and try again.
@@ -98,7 +98,7 @@ echo ═════════════════════════
 echo  Verification
 echo ════════════════════════════════════════════════════
 echo.
-call "%VENV_DIR%\Scripts\python.exe" -c "import yt_dlp, google.genai, whisper, easyocr, PIL, moviepy, instaloader, requests, pandas, openpyxl, torch, curl_cffi; print('✅ All %d packages imported successfully' % len(['yt_dlp','google.genai','whisper','easyocr','PIL','moviepy','instaloader','requests','pandas','openpyxl','torch','curl_cffi']))" 2>&1
+call "%VENV_DIR%\Scripts\python.exe" -c "import yt_dlp, google.genai, google.auth, google.oauth2.service_account, whisper, easyocr, PIL, moviepy, instaloader, requests, pandas, openpyxl, torch, curl_cffi; print('OK: all core packages imported (incl. google.genai + google.auth)')" 2>&1
 if %ERRORLEVEL% EQU 0 (
     echo.
     echo ╔══════════════════════════════════════════════════╗
@@ -117,6 +117,32 @@ if %ERRORLEVEL% EQU 0 (
 ) else (
     echo.
     echo [WARNING] Some packages failed verification. Check output above.
+)
+echo.
+
+:: ── Gemini credentials check (Case Commentary / Script Studio tabs) ──
+echo ════════════════════════════════════════════════════
+echo  Gemini credentials check (AI tabs)
+echo ════════════════════════════════════════════════════
+echo.
+set "SA_KEY=%CD%\data\service-account-key.json"
+set "GEM_CFG=%CD%\data\gemini_config.json"
+if not exist "data" mkdir "data"
+if exist "%SA_KEY%" (
+    echo   [OK] Service-account key found: data\service-account-key.json
+) else (
+    echo   [MISSING] data\service-account-key.json  NOT found.
+    echo             The Case Commentary and Script Studio tabs will NOT work
+    echo             until you add Gemini credentials. Two options:
+    echo               1. Copy your service-account-key.json into the .\data\ folder, OR
+    echo               2. Launch the app, open the Gemini/API settings row, paste an
+    echo                  API key ^(or Browse to a service-account JSON^), and Save.
+)
+if exist "%GEM_CFG%" (
+    echo   [OK] gemini_config.json found.
+) else (
+    echo   [INFO] No gemini_config.json yet. It is created the first time you
+    echo          save credentials in the app. This is normal on a fresh clone.
 )
 echo.
 

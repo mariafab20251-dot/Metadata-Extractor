@@ -401,6 +401,40 @@ class VideoDownloader:
                         f"Your cookies are expired. Re-export cookies.txt from browser."
                     )
 
+                # Transient network / TLS corruption — the encrypted stream got
+                # scrambled in transit (often an antivirus/firewall doing HTTPS
+                # inspection, a flaky VPN, or a bad link). These almost always
+                # succeed on a fresh connection, so retry if attempts remain.
+                _transient_markers = (
+                    'decryption_failed_or_bad_record_mac',
+                    'bad record mac',
+                    'ssl',
+                    'connection reset',
+                    'connection aborted',
+                    'read timed out',
+                    'timed out',
+                    'incomplete',
+                    'temporary failure',
+                    'remote end closed',
+                )
+                _is_transient = any(m in error_msg.lower() for m in _transient_markers)
+                if _is_transient and attempt < MAX_RETRY_474 + 1:
+                    last_error = e
+                    print(f"   ⚠️  Transient network/SSL error — will retry on a fresh connection")
+                    continue
+                if _is_transient:
+                    raise Exception(
+                        "❌ Download kept failing with a network/SSL error "
+                        "(the encrypted stream got corrupted in transit).\n\n"
+                        "This is usually NOT the video — it's something between "
+                        "your PC and the server. Try:\n"
+                        "  • Temporarily disable antivirus/firewall HTTPS scanning "
+                        "(the #1 cause on Windows)\n"
+                        "  • Turn a VPN/proxy off (or switch exit node)\n"
+                        "  • Check your Wi-Fi / network stability, then retry\n\n"
+                        f"Details: {error_msg}"
+                    )
+
                 raise Exception(f"❌ Download failed: {error_msg}")
 
     def download_audio(self, url, video_id, audio_format="mp3", voice_only=False, title=None, progress_callback=None):

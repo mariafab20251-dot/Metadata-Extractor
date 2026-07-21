@@ -313,31 +313,72 @@ class InstagramScraper:
                 return match.group(1)
         return None
 
+    def _fetch_caption_via_ytdlp(self, shortcode):
+        """Fallback: extract caption using yt-dlp (handles Instagram's API changes).
+
+        Instaloader's GraphQL API often returns 403. yt-dlp has its own
+        Instagram extractor that handles authentication and API changes.
+        """
+        import re
+
+        # Find a valid cookie file
+        valid_cookies = find_instagram_cookies()
+        if not valid_cookies:
+            return "", ""
+
+        cookie_path = str(valid_cookies[0][0])
+
+        try:
+            import yt_dlp
+            url = f"https://www.instagram.com/reel/{shortcode}/"
+            with yt_dlp.YoutubeDL({
+                'quiet': True,
+                'no_warnings': True,
+                'cookiefile': cookie_path,
+                'extract_flat': False,
+            }) as ydl:
+                info = ydl.extract_info(url, download=False)
+                caption = info.get('description', '') or ''
+
+                # Extract hashtags from caption
+                hashtags = ""
+                if caption:
+                    hashtag_pattern = r'#(\w+)'
+                    found_hashtags = re.findall(hashtag_pattern, caption)
+                    hashtags = ", ".join(found_hashtags) if found_hashtags else ""
+
+                if caption:
+                    print(f"[DEBUG] Caption fetched via yt-dlp ({len(caption)} chars)")
+                    return caption, hashtags
+
+                return "", ""
+
+        except Exception as e2:
+            print(f"Warning: yt-dlp fallback also failed: {str(e2)}")
+            return "", ""
+
     def get_post_metadata(self, url):
         video_id = self.extract_video_id(url)
         if not video_id:
             return None, "", ""
 
+        # Method 1: Try Instaloader (GraphQL API)
         try:
-            # Fetch post metadata using Instaloader
             post = instaloader.Post.from_shortcode(self.loader.context, video_id)
-
-            # Extract caption
             caption = post.caption if post.caption else ""
-
-            # Extract hashtags from caption
             hashtags = ""
             if caption:
                 hashtag_pattern = r'#(\w+)'
                 found_hashtags = re.findall(hashtag_pattern, caption)
                 hashtags = ", ".join(found_hashtags) if found_hashtags else ""
-
             return video_id, caption, hashtags
-
         except Exception as e:
-            # If metadata fetch fails, still return video_id so download can proceed
-            print(f"Warning: Could not fetch Instagram metadata: {str(e)}")
-            return video_id, "", ""
+            print(f"Warning: Instaloader metadata fetch failed: {str(e)}")
+
+        # Method 2: Fallback to yt-dlp (handles Instagram API changes)
+        print(f"Falling back to yt-dlp for {video_id}...")
+        caption, hashtags = self._fetch_caption_via_ytdlp(video_id)
+        return video_id, caption, hashtags
 
     def get_all_videos_from_profile(self, username, max_videos=50):
         """Get video URLs from an Instagram profile with rate limiting"""

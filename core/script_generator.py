@@ -126,6 +126,15 @@ class ScriptGenerator:
                 "haunted vessels — narrated with deep-sea philosophical "
                 "tone, scene-by-scene action + moral insight",
         },
+        "funny_compilations": {
+            "file": "Funny Compilations Master Prompt.txt",
+            "name": "Funny Compilations",
+            "description":
+                "Funny fails/bloopers compilations (many ~4s clips) — a warm "
+                "15-20s welcome + mini entertainment disclaimer, then ONE short "
+                "funny reaction per clip ('oh come on!', 'what a shot!', a "
+                "'hahaha' only when earned)",
+        },
     }
 
 
@@ -1280,7 +1289,8 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
 
     def generate_script_from_video(self, video_url=None, video_path=None, language="english",
                                    niche_angle="", style_preference="", context="",
-                                   transcript=None, wpm=None, progress_callback=None):
+                                   transcript=None, wpm=None, progress_callback=None,
+                                   upload_cache=None):
         """Generate a narration script by having Gemini watch a video (visuals + audio).
 
         For YouTube URLs — Gemini watches natively via URL.
@@ -1293,6 +1303,11 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
             niche_angle: Content niche/style
             transcript: Optional transcript text to supplement what Gemini hears
             progress_callback: Optional callable(msg) for real-time status updates
+            upload_cache: Optional dict {resolved_path -> upload_info} owned by
+                the caller (e.g. the GUI). When a local file is uploaded, the
+                result is cached here so re-running the SAME video (e.g. for a
+                second language) skips the slow re-upload. Gemini File-API URIs
+                last ~48h, matching this session-scoped cache.
 
         Returns:
             dict with keys: script, suggested_title, hashtag_1, hashtag_2,
@@ -1306,59 +1321,92 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
 
 
         try:
-            # ── Resolve video file (download if YouTube URL) ────
-            if progress_callback:
-                progress_callback("📥 Resolving video file...")
-            local_path = self._resolve_video(video_url, video_path)
-            if isinstance(local_path, dict) and "error" in local_path:
-                return local_path
+            # A YouTube URL (with no local file override) can be watched
+            # NATIVELY by Gemini — no download, no upload.  For heavy videos
+            # (movies) this avoids pulling gigabytes down and pushing them
+            # back up.  We try native first and fall back to the classic
+            # download + File-API-upload path if native fails (private video,
+            # too long, quota, etc.).
+            is_youtube = bool(
+                video_url and not (video_path and Path(video_path).exists())
+                and ('youtube.com' in video_url.lower()
+                     or 'youtu.be' in video_url.lower()))
 
-            # Upload to Gemini File API
-            upload = self._upload_video(local_path, progress_callback=progress_callback)
-            if "error" in upload:
-                return upload
+            def _build_prompt(video_duration):
+                """Build the narration prompt for a known duration."""
+                target_wc, eff_wpm = self._target_word_count(video_duration, wpm)
+                if progress_callback:
+                    progress_callback(
+                        f"📝 Building narration prompt ({target_wc} words "
+                        f"for {video_duration:.0f}s video)...")
+                return self._build_video_prompt(
+                    language, niche_angle, transcript,
+                    style_preference=style_preference, context=context,
+                    video_duration=video_duration,
+                    target_word_count=target_wc,
+                    wpm=eff_wpm,
+                ), target_wc
 
-            # ── Detect video duration & calculate target word count ────
-            # Gemini is bad at counting words by ear from a video.
-            # We measure the actual file duration and calculate a precise
-            # target so the script fits perfectly — no cutoff at the end.
-            video_duration = 0.0
-            target_word_count = 0
-            try:
-                import subprocess, json as _json
-                res = subprocess.run(
-                    ["ffprobe", "-v", "error", "-show_entries",
-                     "format=duration", "-of", "json", local_path],
-                    capture_output=True, text=True, timeout=15,
-                )
-                if res.returncode == 0:
-                    info = _json.loads(res.stdout)
-                    video_duration = float(info.get("format", {}).get("duration", 0))
-                    # WPM: use calibration tables by default (Zephyr/Storytelling ~107 WPM
-                    # effective at 1.2x), caller overrides for slower engines (qwen3=110)
-                    if wpm:
-                        effective_wpm = wpm
-                        target_word_count = int((video_duration / 60.0) * effective_wpm)
-                    else:
-                        target_word_count = calc_target_word_count(video_duration,
-                                                                    'Zephyr', 'Storytelling')
-                        effective_wpm = (target_word_count / (video_duration / 60.0)
-                                         if video_duration > 0 else 107)
-            except Exception:
-                pass  # non-critical — prompt falls back to "count by ear"
+            result = None
+            if is_youtube:
+                # Duration via metadata only (no download).
+                if progress_callback:
+                    progress_callback("🔗 Trying native YouTube (no download)...")
+                yt_duration = self._youtube_duration(video_url)
+                full_prompt, _ = _build_prompt(yt_duration)
+                native = self._call_gemini_youtube_url(
+                    full_prompt, video_url, progress_callback=progress_callback)
+                if "error" not in native:
+                    result = native
+                else:
+                    # Native failed — log the reason and fall through to the
+                    # download + upload path below.
+                    if progress_callback:
+                        progress_callback(
+                            "⚠️ Native YouTube failed "
+                            f"({native.get('error', 'unknown')[:120]}) — "
+                            "falling back to download + upload...")
 
-            if progress_callback:
-                progress_callback(f"📝 Building narration prompt ({target_word_count} words for {video_duration:.0f}s video)...")
-            full_prompt = self._build_video_prompt(
-                language, niche_angle, transcript,
-                style_preference=style_preference, context=context,
-                video_duration=video_duration,
-                target_word_count=target_word_count,
-                wpm=effective_wpm,
-            )
+            if result is None:
+                # ── Resolve video file (download if YouTube URL) ────
+                if progress_callback:
+                    progress_callback("📥 Resolving video file...")
+                local_path = self._resolve_video(video_url, video_path)
+                if isinstance(local_path, dict) and "error" in local_path:
+                    return local_path
 
-            # Make the API call with the uploaded file
-            result = self._call_gemini_with_file(full_prompt, upload, progress_callback=progress_callback)
+                # Upload to Gemini File API — session-cached so re-running the
+                # SAME video (e.g. a second language) skips the slow re-upload.
+                _cache_key = None
+                if upload_cache is not None:
+                    try:
+                        _cache_key = str(Path(local_path).resolve())
+                    except Exception:
+                        _cache_key = None
+                if _cache_key and _cache_key in upload_cache:
+                    upload = upload_cache[_cache_key]
+                    if progress_callback:
+                        progress_callback("♻️ Using cached upload (same video)")
+                else:
+                    upload = self._upload_video(local_path, progress_callback=progress_callback)
+                    if "error" in upload:
+                        return upload
+                    if _cache_key:
+                        upload_cache[_cache_key] = upload
+                if "error" in upload:
+                    return upload
+
+                # ── Detect video duration & calculate target word count ────
+                # Gemini is bad at counting words by ear from a video.
+                # We measure the actual file duration and calculate a precise
+                # target so the script fits perfectly — no cutoff at the end.
+                video_duration = self._probe_duration(local_path)
+                full_prompt, _ = _build_prompt(video_duration)
+
+                # Make the API call with the uploaded file
+                result = self._call_gemini_with_file(full_prompt, upload,
+                                                     progress_callback=progress_callback,
+                                                     video_duration=video_duration)
 
             if "error" in result:
                 return result
@@ -1414,7 +1462,14 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
         except Exception as e:
             return {"error": f"Script generation failed: {str(e)}"}
 
-    def _call_gemini_with_file(self, prompt, file_info, timeout=600, progress_callback=None):
+    # Long videos sampled at the default 1 fps / high resolution overflow the
+    # model context window and the API rejects the request with HTTP 400
+    # "invalid argument". Above this many seconds we down-sample: fewer frames
+    # per second + low media resolution keeps the video token count in budget.
+    LONG_VIDEO_THRESHOLD_SEC = 20 * 60  # 20 minutes
+
+    def _call_gemini_with_file(self, prompt, file_info, timeout=600,
+                               progress_callback=None, video_duration=0.0):
         """Call Gemini with an uploaded file reference (video/image).
 
         Args:
@@ -1422,6 +1477,10 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
             file_info: Dict with file_uri and mime_type from _upload_video
             timeout: HTTP request timeout in seconds
             progress_callback: Optional callable(msg) for status updates
+            video_duration: Video length in seconds. Long videos are
+                down-sampled (lower fps + low media resolution) so their
+                token count stays within the model's context window;
+                otherwise the API returns HTTP 400 "invalid argument".
 
         Returns dict with keys: text, or error on failure.
         """
@@ -1432,6 +1491,33 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
             self._exhausted_keys.clear()
 
         file_data = {"mime_type": file_info["mime_type"], "file_uri": file_info["file_uri"]}
+
+        # ── Down-sample long videos to fit the context window ──────────────
+        # Video tokens ≈ fps × seconds × tokens-per-frame. At 1 fps a 2-hour
+        # video is ~1.8-2M tokens and overflows the window → HTTP 400. We drop
+        # the sampling rate so the total frame count stays bounded, and force
+        # low media resolution (fewer tokens per frame).
+        low_res = False
+        sample_fps = None
+        video_metadata = None
+        try:
+            dur = float(video_duration or 0)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if dur > self.LONG_VIDEO_THRESHOLD_SEC:
+            low_res = True
+            # Cap total sampled frames to ~1500 so even multi-hour videos fit.
+            sample_fps = max(0.1, min(1.0, 1500.0 / dur))
+            # NOTE: video_metadata is a field of the *Part*, a sibling of
+            # file_data — NOT a key inside file_data. Nesting it inside
+            # file_data makes the API reject the request with HTTP 400
+            # "Unknown name video_metadata ... Cannot find field".
+            video_metadata = {"fps": round(sample_fps, 4)}
+            if progress_callback:
+                progress_callback(
+                    f"🎞️ Long video ({dur/60:.0f} min) — sampling at "
+                    f"{sample_fps:.2f} fps / low resolution to fit Gemini's limit."
+                )
 
         tried_keys = set()
         while len(tried_keys) < self.get_key_count():
@@ -1444,14 +1530,22 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
             url = f"{self.BASE_URL}/models/{self.MODEL_NAME}:generateContent"
             params = {"key": key}
             headers = {"Content-Type": "application/json"}
+            file_part = {"file_data": file_data}
+            if video_metadata is not None:
+                # video_metadata sits alongside file_data inside the Part.
+                file_part["video_metadata"] = video_metadata
             payload = {
                 "contents": [{
                     "parts": [
-                        {"file_data": file_data},
+                        file_part,
                         {"text": prompt},
                     ]
                 }]
             }
+            if low_res:
+                # Low media resolution → fewer tokens per frame. Combined with
+                # the reduced fps above this keeps long videos inside the window.
+                payload["generationConfig"] = {"mediaResolution": "MEDIA_RESOLUTION_LOW"}
 
             try:
                 if progress_callback:
@@ -1498,6 +1592,287 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 return {"error": f"Gemini API request failed: {str(e)}"}
 
         return {"error": f"All {self.get_key_count()} API key(s) failed on video request."}
+
+    def _call_gemini_youtube_url(self, prompt, youtube_url, timeout=600,
+                                 progress_callback=None):
+        """Call Gemini with a YouTube URL it watches NATIVELY (no download).
+
+        Gemini fetches the public YouTube video server-side, so there is no
+        local download and no File-API upload — instant for normal-length
+        videos.  Only works for PUBLIC videos and is subject to Gemini's
+        native-YouTube duration/quota limits; the caller falls back to the
+        download+upload path when this returns an error.
+
+        Returns dict with keys: text, or error on failure.
+        """
+        if not self.is_configured():
+            return {"error": "Gemini API not configured."}
+
+        if self.all_keys_exhausted:
+            self._exhausted_keys.clear()
+
+        # For a YouTube URL the file_data part carries just the URI — Gemini
+        # resolves the media type itself.
+        file_data = {"file_uri": youtube_url}
+
+        tried_keys = set()
+        while len(tried_keys) < self.get_key_count():
+            key = self._get_current_api_key()
+            if key is None or self._current_key_index in tried_keys:
+                break
+            tried_keys.add(self._current_key_index)
+
+            url = f"{self.BASE_URL}/models/{self.MODEL_NAME}:generateContent"
+            params = {"key": key}
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"file_data": file_data},
+                        {"text": prompt},
+                    ]
+                }]
+            }
+
+            try:
+                if progress_callback:
+                    progress_callback("🔗 Gemini is watching the YouTube video directly...")
+                response = requests.post(url, params=params, headers=headers,
+                                         json=payload, timeout=timeout)
+                if response.status_code == 200:
+                    data = response.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        content = candidates[0].get("content", {})
+                        parts = content.get("parts", [])
+                        if parts:
+                            text = parts[0].get("text", "")
+                            if text:
+                                return {"text": text}
+                    return {"error": "Empty response from Gemini — no content returned"}
+                else:
+                    error_detail = ""
+                    try:
+                        err_data = response.json()
+                        err_info = err_data.get("error", {})
+                        error_detail = err_info.get("message", "") or err_info.get("status", "")
+                    except Exception:
+                        error_detail = response.text[:500]
+
+                    status = response.status_code
+                    is_quota = (status == 429 and ("quota" in error_detail.lower()
+                                or "RESOURCE_EXHAUSTED" in error_detail))
+                    if is_quota:
+                        self._mark_current_key_exhausted()
+                        continue
+
+                    return {
+                        "error": f"Gemini native-YouTube error (HTTP {status}): {error_detail}",
+                        "_status": status,
+                    }
+
+            except requests.exceptions.Timeout:
+                return {"error": "Gemini native-YouTube request timed out."}
+            except requests.exceptions.ConnectionError:
+                return {"error": "Failed to connect to Gemini API."}
+            except Exception as e:
+                return {"error": f"Gemini native-YouTube request failed: {str(e)}"}
+
+        return {"error": f"All {self.get_key_count()} API key(s) failed on native-YouTube request."}
+
+    # ── Video duration helpers ───────────────────────────────
+
+    @staticmethod
+    def _youtube_duration(youtube_url):
+        """Fetch a YouTube video's duration (seconds) via metadata only.
+
+        Uses yt-dlp with ``download=False`` so nothing is downloaded — just
+        the info JSON.  Returns 0.0 on any failure (non-critical; the prompt
+        falls back to "count by ear").
+        """
+        try:
+            import yt_dlp
+            opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(youtube_url, download=False)
+            return float(info.get("duration", 0) or 0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _probe_duration(local_path):
+        """Probe a local video file's duration (seconds) via ffprobe.
+
+        Returns 0.0 on any failure (non-critical).
+        """
+        try:
+            import subprocess, json as _json
+            res = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries",
+                 "format=duration", "-of", "json", str(local_path)],
+                capture_output=True, text=True, timeout=15,
+            )
+            if res.returncode == 0:
+                info = _json.loads(res.stdout)
+                return float(info.get("format", {}).get("duration", 0) or 0)
+        except Exception:
+            pass
+        return 0.0
+
+    def _target_word_count(self, video_duration, wpm=None):
+        """Compute (target_word_count, effective_wpm) from a video duration.
+
+        Mirrors the calibration logic used elsewhere: caller-supplied ``wpm``
+        wins, else the Zephyr/Storytelling calibration table is used.
+        """
+        if video_duration <= 0:
+            return 0, (wpm or 107)
+        if wpm:
+            return int((video_duration / 60.0) * wpm), wpm
+        target = calc_target_word_count(video_duration, 'Zephyr', 'Storytelling')
+        eff = target / (video_duration / 60.0) if video_duration > 0 else 107
+        return target, eff
+
+    # ── Thumbnail styling prompt (vision) ────────────────────
+
+    def analyze_thumbnail(self, image_path, title="", niche="", language="",
+                          vertical=False, timeout=120):
+        """Study an original thumbnail image and write an IMPROVED styling prompt.
+
+        Sends the reference thumbnail (inline image) to Gemini and asks it to
+        describe a recreation that keeps the same layout/subject/composition
+        but with sharper visuals and better, punchier text.  The returned
+        prompt is meant to be fed straight into the image model in Tool 2
+        alongside the SAME reference image.
+
+        Returns dict: ``{"prompt": str, "title_text": str}`` or ``{"error": ...}``.
+        """
+        image_path = Path(image_path)
+        if not image_path.is_file():
+            return {"error": f"Thumbnail image not found: {image_path}"}
+        if not self.is_configured():
+            return {"error": "Gemini API not configured."}
+
+        try:
+            img_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        except Exception as e:
+            return {"error": f"Could not read thumbnail image: {e}"}
+        mime = "image/png" if image_path.suffix.lower() == ".png" else "image/jpeg"
+
+        aspect = "9:16 vertical (Shorts/Reels)" if vertical else "16:9 (YouTube)"
+        lang_line = (f"Any overlay text must be written in {language}.\n"
+                     if language else "")
+        ctx = []
+        if title:
+            ctx.append(f"Video title: {title}")
+        if niche:
+            ctx.append(f"Niche/topic: {niche}")
+        ctx_block = ("\n".join(ctx) + "\n") if ctx else ""
+
+        instruction = (
+            "You are a world-class YouTube thumbnail art director.\n"
+            "Look at the attached ORIGINAL thumbnail for this video.\n"
+            f"{ctx_block}"
+            "Write a single image-generation prompt that RECREATES this exact "
+            "thumbnail — same core subject, composition, framing and mood — but "
+            "make it noticeably BETTER: sharper focus, cleaner cinematic color "
+            "grading, stronger contrast and lighting on the subject, and more "
+            "polished, higher-CTR overlay text.\n"
+            f"Target aspect ratio: {aspect}.\n"
+            f"{lang_line}"
+            "Keep the subject's face (if any) recognizable and well-lit. No "
+            "watermarks, no logos, no gibberish text.\n\n"
+            "Respond in EXACTLY this format, nothing else:\n"
+            "PROMPT: <the full styling prompt, one paragraph>\n"
+            "TITLE: <the short punchy overlay text to render, max 6 words>"
+        )
+
+        parts = [
+            {"inline_data": {"mime_type": mime, "data": img_b64}},
+            {"text": instruction},
+        ]
+        result = self._call_gemini_vision(parts, timeout=timeout)
+        if "error" in result:
+            return result
+
+        text = (result.get("text") or "").strip()
+        prompt_out, title_out = "", ""
+        pm = re.search(r'PROMPT:\s*(.+?)(?:\nTITLE:|$)', text,
+                       re.IGNORECASE | re.DOTALL)
+        tm = re.search(r'TITLE:\s*(.+)', text, re.IGNORECASE)
+        if pm:
+            prompt_out = pm.group(1).strip()
+        if tm:
+            title_out = tm.group(1).strip().strip('"').strip()
+        if not prompt_out:
+            prompt_out = text  # fall back to the raw text if unformatted
+        return {"prompt": prompt_out, "title_text": title_out}
+
+    def _call_gemini_vision(self, parts, timeout=120):
+        """Send mixed image+text *parts* to Gemini with key rotation.
+
+        Mirrors ``_call_gemini_with_file`` but takes pre-built content parts
+        (so inline image data can be included) and tries the model fallback
+        list on 404s.
+        """
+        if not self.is_configured():
+            return {"error": "Gemini API not configured."}
+        if self.all_keys_exhausted:
+            self._exhausted_keys.clear()
+
+        models_to_try = [self.MODEL_NAME] + self.FALLBACK_MODELS
+        tried_keys = set()
+        last_err = "unknown error"
+        while len(tried_keys) < self.get_key_count():
+            key = self._get_current_api_key()
+            if key is None or self._current_key_index in tried_keys:
+                break
+            tried_keys.add(self._current_key_index)
+
+            for model in models_to_try:
+                url = f"{self.BASE_URL}/models/{model}:generateContent"
+                payload = {"contents": [{"parts": parts}]}
+                try:
+                    response = requests.post(
+                        url, params={"key": key},
+                        headers={"Content-Type": "application/json"},
+                        json=payload, timeout=timeout)
+                except requests.exceptions.Timeout:
+                    return {"error": "Gemini vision request timed out."}
+                except Exception as e:
+                    last_err = str(e)
+                    continue
+
+                if response.status_code == 200:
+                    data = response.json()
+                    cands = data.get("candidates", [])
+                    if cands:
+                        p = (cands[0].get("content", {}) or {}).get("parts", [])
+                        if p and p[0].get("text"):
+                            return {"text": p[0]["text"]}
+                    last_err = "empty response"
+                    continue
+
+                # Parse error
+                try:
+                    err_info = response.json().get("error", {})
+                    detail = err_info.get("message", "") or err_info.get("status", "")
+                except Exception:
+                    detail = response.text[:300]
+                last_err = f"HTTP {response.status_code}: {detail}"
+
+                is_quota = (response.status_code == 429
+                            and ("quota" in detail.lower()
+                                 or "RESOURCE_EXHAUSTED" in detail))
+                if is_quota:
+                    self._mark_current_key_exhausted()
+                    break  # next key
+                if response.status_code == 404 or "not found" in detail.lower():
+                    continue  # next model
+                # other error — try next model then next key
+                continue
+
+        return {"error": f"Gemini vision failed: {last_err}"}
 
     # ── Helpers for video script generation ─────────────────
 

@@ -947,6 +947,9 @@ class Dashboard:
         Built into self.video_script_tab, a sub-frame of the merged
         Script Studio tab (set up by create_script_studio_tab).
         """
+        # Session cache: resolved video path → {file_uri, mime_type}. Lets a
+        # re-run of the SAME video (e.g. a second language) skip the re-upload.
+        self._vs_upload_cache = {}
         # Scrollable wrapper for this sub-tab
         _scr = ScrollableFrame(self.video_script_tab)
         _scr.pack(fill=tk.BOTH, expand=True)
@@ -1453,6 +1456,7 @@ class Dashboard:
                             niche_angle=niche,
                             style_preference=style_pref,
                             context=context,
+                            upload_cache=self._vs_upload_cache,
                         )
                         v["result"] = result
                         if "error" in result:
@@ -1526,7 +1530,12 @@ class Dashboard:
                     "Niche": self.vs_niche_var.get().strip(),
                     "Prompt Type": self.vs_prompt_type_var.get().strip(),
                     "Custom Title": r.get("suggested_title", ""),
-                    "Custom Script": r.get("script", ""),
+                    # Clean the raw Gemini output down to narration-only before
+                    # saving — the batch generate path stores the raw result, so
+                    # without this the Dialogue-Only preset's deliverables
+                    # package (analysis report, sync checklist, effects notes)
+                    # would leak into Custom Script and Tool 2 would read it aloud.
+                    "Custom Script": self._clean_narration_script(r.get("script", "")),
                     "Word Count": r.get("generated_word_count", 0),
                     "Hashtag 1": r.get("hashtag_1", ""),
                     "Hashtag 2": r.get("hashtag_2", ""),
@@ -1631,6 +1640,7 @@ class Dashboard:
                         transcript=transcript if transcript else None,
                         wpm=wpm_val,
                         progress_callback=lambda msg: self.root.after(0, lambda m=msg: self.vs_status_label.config(text=m, fg="blue")),
+                        upload_cache=self._vs_upload_cache,
                     )
                     self.root.after(0, lambda: self._vs_handle_result(result))
                 except Exception as e:
@@ -1704,6 +1714,7 @@ class Dashboard:
                         transcript=transcript if transcript else None,
                         wpm=wpm_val,
                         progress_callback=lambda msg: self.root.after(0, lambda m=msg: self.vs_status_label.config(text=m, fg="blue")),
+                        upload_cache=self._vs_upload_cache,
                     )
                     all_results.append({"url": url, "result": result})
 
@@ -1744,8 +1755,18 @@ class Dashboard:
         """Strip analysis reports, deliverables packages, and other extra content
         from Gemini output — keep only the clean narration script with timestamps.
 
-        Both courtroom format (00:00 | text | words | [beat]) and movie format
-        ([00:00] | text | (words) | [beat]) are preserved.
+        Handles three Gemini output shapes:
+          1. Pipe format (courtroom / movie recap):
+             ``[00:00] | text | (words) | [beat]`` — kept as-is.
+          2. Dash / "visual sync checklist" format (the Dialogue-Only preset):
+             ``[00:00] — "spoken text" syncs with <english note>`` — the spoken
+             text is pulled out of the quotes and the "syncs with…" English note
+             is dropped, then rebuilt into clean ``[00:00] | text`` pipe lines.
+             Without this, the whole deliverables package (SCENE ANALYSIS
+             REPORT, WORD COUNT VERIFICATION, PRODUCTION EFFECTS NOTES, etc.)
+             leaked into the Custom Script column and Tool 2 read it all aloud —
+             timestamps, English descriptions and all.
+          3. No timestamps at all — returned as-is.
         """
         if not raw_script:
             return ""
@@ -1763,24 +1784,65 @@ class Dashboard:
                     first_ts = i
                 last_ts = i
 
-        if first_ts is None:
-            # No timestamps — return as-is (courtroom sometimes has no timestamps)
-            return raw_script.strip()
+        if first_ts is not None:
+            # ── Pipe format found — keep only the real narration lines ──────
+            # Several movie/CCTV presets interleave progress / confirmation
+            # lines BETWEEN the narration ones:
+            #   // Running total: 120 of 270 words //
+            #   // Watched up to 03:15 — next segment: 03:20 //
+            #   [SYNC: matches visual at this timestamp — door opens]
+            # and end with a "PHASE 6 DELIVERABLES" report. The [first_ts:
+            # last_ts] slice drops the trailing report, but these inline lines
+            # would otherwise leak into Custom Script and get read aloud by
+            # Tool 2. Drop anything that isn't an actual "[MM:SS] | …" line
+            # (plus markdown headings / separators).
+            narration = lines[first_ts:last_ts + 1]
+            clean = []
+            for line in narration:
+                stripped = line.strip()
+                if not stripped:
+                    clean.append(line)        # keep blank spacers
+                    continue
+                # Drop markdown headings and separator lines
+                if stripped.startswith("###") or stripped.startswith("---"):
+                    continue
+                # Drop // running total // and // watched up to … // markers
+                if stripped.startswith("//") or stripped.startswith("＃"):
+                    continue
+                # Drop standalone [SYNC: …] / [NOTE: …] production notes
+                if re.match(r"^\[(?:SYNC|NOTE|BEAT)\b", stripped, re.IGNORECASE):
+                    continue
+                # Keep only genuine timestamped narration lines; anything else
+                # inside the block (stray prose, labels) is noise.
+                if re.match(ts_pattern, stripped):
+                    clean.append(line)
+            return "\n".join(clean).strip()
 
-        # Extract the narration block (between first and last timestamp)
-        narration = lines[first_ts:last_ts + 1]
+        # ── No pipe timestamps — try the dash / sync-checklist format ───────
+        # Only lines whose content STARTS with a double-quote right after the
+        # dash are narration; effects notes ("[00:08] — Zoom in: …") have no
+        # leading quote and are correctly skipped. The inner dialogue in the
+        # narration uses single quotes, so the first closing double-quote is
+        # the true end of the spoken text.
+        dash_pattern = re.compile(
+            r'^\s*\[?(\d{1,2}:\d{2})\]?\s*[—–\-]\s*'   # [MM:SS] — / - / –
+            r'["“”]([^"“”]+)["“”]'                        # "spoken text"
+        )
+        dash_lines = []
+        for line in lines:
+            m = dash_pattern.match(line.strip())
+            if m:
+                ts = m.group(1)
+                spoken = m.group(2).strip()
+                if spoken:
+                    dash_lines.append(f"[{ts}] | {spoken}")
 
-        # Filter out analysis/deliverable lines (### headings, --- separators, etc.)
-        # Keep timestamp lines, blank lines, and running total lines
-        clean = []
-        for line in narration:
-            stripped = line.strip()
-            # Drop markdown headings and separator lines
-            if stripped.startswith("###") or stripped.startswith("---"):
-                continue
-            clean.append(line)
+        if dash_lines:
+            return "\n".join(dash_lines).strip()
 
-        return "\n".join(clean).strip()
+        # No recognisable timestamps at all — return as-is (some courtroom
+        # scripts are plain prose without timestamps).
+        return raw_script.strip()
 
     def _vs_handle_result(self, result):
         """Handle the video script generation result."""
@@ -1882,12 +1944,33 @@ class Dashboard:
             self.vs_status_label.config(text="❌ Nothing to save — generate a script first.", fg="red")
             return
 
+        # Build a default filename matching the Case Commentary style:
+        # <niche-slug>_<video-id>_<language>.xlsx  (falls back gracefully).
+        prompt_type_name = self.vs_prompt_type_var.get().strip()
+        _slug = None
+        try:
+            from core.script_generator import ScriptGenerator
+            for s, dname, _ in ScriptGenerator(api_keys=[]).get_prompt_list():
+                if dname == prompt_type_name:
+                    _slug = s
+                    break
+        except Exception:
+            pass
+        _niche_part = _slug or (self.vs_niche_var.get().strip() or "VideoScript")
+        _lang = self.vs_lang_var.get().strip() or "lang"
+        _ids = [str(r.get("Video ID", "")).strip() for r in rows if str(r.get("Video ID", "")).strip()]
+        _vid_part = _ids[0] if len(_ids) == 1 else ("batch" if _ids else "unknown")
+        # Sanitize for a filesystem-safe name.
+        def _safe(s):
+            return re.sub(r'[^A-Za-z0-9._-]+', '_', str(s)).strip('_') or "x"
+        default_name = f"{_safe(_niche_part)}_{_safe(_vid_part)}_{_safe(_lang)}.xlsx"
+
         path = filedialog.asksaveasfilename(
             title="Save Script to Excel",
             defaultextension=".xlsx",
             filetypes=[("Excel files", "*.xlsx")],
             initialdir=str(Path(__file__).parent.parent / "channels"),
-            initialfile=f"VideoScript_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            initialfile=default_name
         )
         if not path:
             return
@@ -2015,6 +2098,22 @@ class Dashboard:
                       "Auto-on for the Long Video niche.",
                  font=("Arial", 7), fg="#666", justify=tk.LEFT,
                  wraplength=300).pack(anchor=tk.W, pady=(0, 4))
+
+        # ── Aspect ratio (Movie Recap niche: 16:9 / 9:16 / 1:1) ──────────────
+        # Written to the Excel "Aspect Ratio" column. Tool 2 renders the
+        # stitched cut in this shape. 16:9 = native (no reframe), 9:16 = vertical
+        # reframe with face tracking, 1:1 = square. Only meaningful for the
+        # story-cut niches (Movie Recap / Long Video); harmless otherwise.
+        asp_row = tk.Frame(opt_box)
+        asp_row.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(asp_row, text="🖼 Aspect ratio:",
+                 font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        self.cc_aspect_var = tk.StringVar(value="16:9 (horizontal)")
+        self.cc_aspect_menu = ttk.Combobox(
+            asp_row, textvariable=self.cc_aspect_var,
+            values=["16:9 (horizontal)", "9:16 (vertical)", "1:1 (square)"],
+            state="readonly", width=18)
+        self.cc_aspect_menu.pack(side=tk.LEFT)
 
         # ── Target duration for story-cut mode (MM:SS format) ────────────────
         dur_row = tk.Frame(opt_box)
@@ -2497,11 +2596,28 @@ class Dashboard:
                         # ── Auto-context: video metadata from Excel ──
                         auto_ctx = self._cc_read_video_excel_metadata(v["path"])
                         if auto_ctx:
-                            prompt += "📹 VIDEO METADATA (title, description, transcript — use this to understand the footage):\n" + auto_ctx + "\n"
+                            prompt += "📹 VIDEO METADATA (title, description, captions, transcript — CRITICAL: use this info as the PRIMARY source for the story. Weave these facts into a gripping narrative covering who, what, where, when, why, and how. Do NOT only describe what the video shows — tell the full incident story from this metadata):\n" + auto_ctx + "\n"
                         if script_input:
                             prompt += f"\n\n📝 OPTIONAL SCRIPT / DESCRIPTION (incorporate this into the narration where relevant):\n{script_input}\n"
 
-                        result = gen._call_gemini_with_file(prompt, upload, timeout=600)
+                        # Measure duration so long videos get down-sampled
+                        # (avoids HTTP 400 "invalid argument" on the analysis call).
+                        _bd = 0.0
+                        try:
+                            import subprocess, json as _json
+                            _probe = subprocess.run(
+                                ['ffprobe', '-v', 'error', '-show_entries',
+                                 'format=duration', '-of', 'json', local_path],
+                                capture_output=True, text=True, timeout=30)
+                            if _probe.returncode == 0:
+                                _bd = float(_json.loads(_probe.stdout).get(
+                                    'format', {}).get('duration', 0))
+                        except Exception:
+                            pass
+
+                        result = gen._call_gemini_with_file(prompt, upload,
+                                                            timeout=600,
+                                                            video_duration=_bd)
                         if "error" in result:
                             v["result"] = {"error": result["error"]}
                             v["status"] = "error"
@@ -2572,17 +2688,38 @@ class Dashboard:
         try:
             import pandas as pd
             rows = []
-            # Vertical / shorts flag (same rule as single save): checkbox OR long-video slug.
+            # Aspect ratio + vertical flag (same rules as single save).
+            try:
+                _aspect_b = (self.cc_aspect_var.get() or "").split()[0]
+            except Exception:
+                _aspect_b = "16:9"
             try:
                 _vertical_b = bool(self.cc_vertical_var.get())
             except Exception:
                 _vertical_b = False
-            try:
-                if self._cc_selected_slug() == "case_commentary_longvideo":
-                    _vertical_b = True
-            except Exception:
-                pass
+            if _aspect_b == "9:16":
+                _vertical_b = True
+            elif _aspect_b in ("16:9", "1:1"):
+                _vertical_b = False
             vertical_flag = "Yes" if _vertical_b else "No"
+            _is_movies_b = (self._cc_selected_slug() == "case_commentary_movies")
+            story_cut_flag = "Yes" if self._cc_selected_slug() in (
+                "case_commentary_longvideo", "case_commentary_movies") else "No"
+            mute_original_flag = "Yes" if _is_movies_b else "No"
+            # Build one generator for thumbnail-prompt vision calls (reused
+            # across all rows). None if no credentials → thumbnail prompt skipped.
+            _batch_gen = None
+            try:
+                from core.script_generator import ScriptGenerator as _SGB
+                _bk = getattr(self, '_saved_api_keys', [])
+                _bsa = self.sa_path_var.get().strip()
+                if _bsa and not _bk:
+                    _batch_gen = _SGB(service_account_path=_bsa)
+                elif _bk:
+                    _batch_gen = _SGB(api_keys=_bk)
+            except Exception as _bge:
+                print(f"[thumbnail] batch generator init failed: {_bge}")
+
             for v in results:
                 r = v["result"]
                 video_name = v["name"]
@@ -2599,6 +2736,8 @@ class Dashboard:
                 thumb_ts = r.get("thumbnail_ts", "") or ""
                 thumb_text = r.get("thumbnail_text", "") or ""
                 thumb_frame_path = ""
+                thumb_prompt = ""
+                thumb_ref = ""
                 if thumb_ts and v.get("path"):
                     try:
                         _sec = r.get("thumbnail_sec", 0) or 0
@@ -2614,6 +2753,22 @@ class Dashboard:
                             thumb_frame_path = str(_frame_out)
                     except Exception:
                         thumb_frame_path = ""
+                # ── Thumbnail styling prompt from the original cover ──
+                # Batch works on local files; reconstruct a YouTube URL from
+                # the 11-char video id so the original thumbnail can be pulled.
+                # Non-YouTube ids simply fail the download → blank → fallback.
+                _vid_b = _extract_video_id(video_name)
+                if _batch_gen is not None and re.fullmatch(r'[A-Za-z0-9_-]{11}', _vid_b or ''):
+                    try:
+                        thumb_prompt, thumb_ref = self._cc_build_thumbnail_prompt(
+                            _batch_gen,
+                            f"https://www.youtube.com/watch?v={_vid_b}",
+                            _vid_b, path,
+                            title="", niche=self.cc_niche_var.get().strip(),
+                            lang=self.cc_lang_var.get().strip(),
+                            vertical=_vertical_b)
+                    except Exception as _bpe:
+                        print(f"[thumbnail] batch prompt build failed: {_bpe}")
                 rows.append({
                     "Video ID": _extract_video_id(video_name),
                     "Title": "",
@@ -2626,9 +2781,14 @@ class Dashboard:
                     "Montage Clips": clips_ref,
                     "Commentary Spots": commentary_ref,
                     "Vertical Format": vertical_flag,
+                    "Aspect Ratio": _aspect_b,
+                    "Story Cut": story_cut_flag,
+                    "Mute Original": mute_original_flag,
                     "Thumbnail Time": thumb_ts,
                     "Thumbnail Text": thumb_text,
                     "Thumbnail Frame": thumb_frame_path,
+                    "Thumbnail Prompt": thumb_prompt,
+                    "Thumbnail Ref": thumb_ref,
                     "Voiceover Style": r.get("voiceover_style", ""),
                     "Voiceover Speed (WPM)": r.get("voiceover_speed", 0),
                     "Hashtag 1": "",
@@ -2870,8 +3030,14 @@ class Dashboard:
                 # teaser prompt's 5s flash-cuts + full-video commentary would
                 # be kept as ~25s of clips while minutes of narration get
                 # truncated to a stub.  So when vertical is on, use story-cut.
+                # NOTE: the Movie Recap niche is ALSO a story-cut prompt (its
+                # segments are full scenes budgeted to the target and its
+                # commentary spots sit inside the cut), so it's already
+                # vertical-compatible — do NOT clobber it back to the courtroom
+                # long-video prompt. Only force longvideo for non-story-cut niches.
+                _STORY_CUT_SLUGS = {"case_commentary_longvideo", "case_commentary_movies"}
                 try:
-                    if bool(self.cc_vertical_var.get()):
+                    if bool(self.cc_vertical_var.get()) and cc_slug not in _STORY_CUT_SLUGS:
                         cc_slug = "case_commentary_longvideo"
                 except Exception:
                     pass
@@ -2899,7 +3065,7 @@ class Dashboard:
                 # ── Auto-context: video metadata from Excel ──
                 auto_ctx = self._cc_read_video_excel_metadata(local_path)
                 if auto_ctx:
-                    prompt += "📹 VIDEO METADATA (title, description, transcript — use this to understand the footage):\n" + auto_ctx + "\n"
+                    prompt += "📹 VIDEO METADATA (title, description, captions, transcript — CRITICAL: use this info as the PRIMARY source for the story. Weave these facts into a gripping narrative covering who, what, where, when, why, and how. Do NOT only describe what the video shows — tell the full incident story from this metadata):\n" + auto_ctx + "\n"
                 if context:
                     prompt += f"\n\n📖 CONTEXT / BACKSTORY (use this to shape the narrative):\n{context}\n"
                 if script_input:
@@ -2911,9 +3077,18 @@ class Dashboard:
                 # source.  Budget the narration to the target, otherwise we'd
                 # tell Gemini to write minutes of script for a 3-min short and
                 # the voiceover overshoots the video massively.
+                # Story-cut niches (courtroom long-video, movie recap) always
+                # produce a SHORT of ~target_duration — the final video is the
+                # stitched segments, NOT the full source — regardless of aspect
+                # ratio (16:9 / 9:16 / 1:1). So budget the narration to the
+                # target whenever this is a story-cut niche OR vertical is on.
+                # Previously this was gated on the vertical checkbox alone, so a
+                # 16:9 long-video cut fell back to the full source duration and
+                # the target-duration setting was effectively ignored.
                 _wc_dur = video_duration
                 try:
-                    if bool(self.cc_vertical_var.get()) and _tgt_sec > 0:
+                    _is_story_cut = cc_slug in _STORY_CUT_SLUGS
+                    if (_is_story_cut or bool(self.cc_vertical_var.get())) and _tgt_sec > 0:
                         _wc_dur = min(video_duration, _tgt_sec) if video_duration > 0 else _tgt_sec
                 except Exception:
                     pass
@@ -2955,7 +3130,8 @@ class Dashboard:
                 status("🤖 Gemini analyzing video... This may take a minute.")
                 result = gen._call_gemini_with_file(prompt, upload,
                                                      timeout=600,
-                                                     progress_callback=lambda m: status(m))
+                                                     progress_callback=lambda m: status(m),
+                                                     video_duration=video_duration)
                 if "error" in result:
                     self.root.after(0, lambda: self.cc_status_label.config(
                         text=f"❌ Gemini error: {result.get('error')}", fg="red"))
@@ -2987,6 +3163,53 @@ class Dashboard:
 
         threading.Thread(target=task, daemon=True).start()
 
+    def _cc_build_thumbnail_prompt(self, gen, url, video_id, out_dir,
+                                   title="", niche="", lang="", vertical=False):
+        """Download the original thumbnail and have Gemini write a better prompt.
+
+        Only recreates when the source has a PROPER published thumbnail
+        (e.g. YouTube maxresdefault).  Otherwise returns ("", "") so the
+        caller/Tool 2 falls back to the current frame-grab + text settings.
+
+        Returns (thumb_prompt, thumb_ref_path).  Both empty on fallback.
+        """
+        if not url:
+            return "", ""
+        try:
+            from core.thumbnail_source import fetch_original_thumbnail
+        except Exception as _ie:
+            print(f"[thumbnail] source module import failed: {_ie}")
+            return "", ""
+
+        ref_out = Path(out_dir).with_name(
+            f"{(video_id or 'thumb')}_origthumb.jpg")
+
+        def _log(level, msg):
+            print(f"[thumbnail] {level}: {msg}")
+
+        try:
+            info = fetch_original_thumbnail(url, ref_out, log=_log)
+        except Exception as _fe:
+            print(f"[thumbnail] fetch failed: {_fe}")
+            return "", ""
+
+        if not info.get("is_proper") or not info.get("path"):
+            # No real designed cover — use current settings (frame + text).
+            return "", ""
+
+        try:
+            res = gen.analyze_thumbnail(
+                info["path"], title=title, niche=niche,
+                language=lang, vertical=vertical)
+        except Exception as _ae:
+            print(f"[thumbnail] analyze failed: {_ae}")
+            return "", info["path"]
+
+        if "error" in res:
+            print(f"[thumbnail] analyze error: {res['error']}")
+            return "", info["path"]
+        return res.get("prompt", ""), info["path"]
+
     def _cc_parse_response(self, text):
         """Parse Gemini's structured output into {summary, clips, spots, voiceover_style, voiceover_speed}."""
         result = {"summary": "", "summary_emotion": "", "disclaimer": "", "clips": [], "spots": [],
@@ -3013,6 +3236,14 @@ class Dashboard:
                 content = chunk.split("\n", 1)
                 if len(content) > 1:
                     raw = content[1].strip()
+                    # Gemini sometimes glues the VOICEOVER STYLE / VOICEOVER
+                    # SPEED lines (and any trailing metadata) onto the end of
+                    # the summary block instead of a separate section. Cut the
+                    # summary off at the first VOICEOVER/THUMBNAIL/section
+                    # marker so those never leak into the spoken narration.
+                    raw = re.split(
+                        r'\n\s*(?:VOICEOVER\s+STYLE|VOICEOVER\s+SPEED|THUMBNAIL|MONTAGE\s+CLIPS|COMMENTARY\s+SPOTS|DISCLAIMER)\b',
+                        raw, maxsplit=1, flags=re.IGNORECASE)[0].strip()
                     # Optional leading [emotion] tag on the summary
                     emo_match = re.match(r'^\[(\w+)\]\s*(.*)', raw, re.DOTALL)
                     if emo_match:
@@ -3218,11 +3449,12 @@ class Dashboard:
                 return ""
             headers = {str(ws.cell(1, c).value or "").strip().lower(): c
                        for c in range(1, ws.max_column + 1)}
-            col_vid       = headers.get("video id", 0)
-            col_title     = headers.get("title", 0)
-            col_desc      = headers.get("description", 0)
+            col_vid        = headers.get("video id", 0)
+            col_title      = headers.get("title", 0)
+            col_desc       = headers.get("description", 0)
             col_transcript = headers.get("speech transcript", 0)
-            col_captions  = headers.get("captions", 0)
+            col_captions   = headers.get("captions", 0)
+            col_overlay    = headers.get("overlay text", 0)
             if not col_vid:
                 return ""
             for row in range(2, ws.max_row + 1):
@@ -3232,11 +3464,14 @@ class Dashboard:
                     description = str(ws.cell(row, col_desc).value or "") if col_desc else ""
                     transcript  = str(ws.cell(row, col_transcript).value or "") if col_transcript else ""
                     captions    = str(ws.cell(row, col_captions).value or "") if col_captions else ""
+                    overlay     = str(ws.cell(row, col_overlay).value or "") if col_overlay else ""
                     parts = []
                     if title:
                         parts.append("📌 TITLE:\n" + title)
                     if description:
                         parts.append("📄 DESCRIPTION:\n" + description)
+                    if overlay:
+                        parts.append("🖼️ OVERLAY TEXT (on-screen text visible in video):\n" + overlay)
                     if transcript:
                         parts.append("🎙️ SPEECH TRANSCRIPT:\n" + transcript)
                     if captions:
@@ -3276,16 +3511,31 @@ class Dashboard:
 
         # Vertical / shorts reframe flag for Tool 2 (Video Automation Studio).
         # Explicit checkbox wins; otherwise the long-video story-cut slug implies vertical.
+        # ── Aspect ratio → derives the vertical flag ──────────────────
+        # Movie Recap exposes 16:9 / 9:16 / 1:1. The legacy "Vertical Format"
+        # flag stays True only for 9:16 (Tool 2's reframe path); 16:9 and 1:1
+        # are non-vertical. The explicit vertical checkbox still forces 9:16.
+        try:
+            _aspect = (self.cc_aspect_var.get() or "").split()[0]  # "16:9" / "9:16" / "1:1"
+        except Exception:
+            _aspect = "16:9"
         try:
             _vertical = bool(self.cc_vertical_var.get())
         except Exception:
             _vertical = False
-        try:
-            if self._cc_selected_slug() == "case_commentary_longvideo":
-                _vertical = True
-        except Exception:
-            pass
+        if _aspect == "9:16":
+            _vertical = True
+        elif _aspect in ("16:9", "1:1"):
+            _vertical = False
         vertical_flag = "Yes" if _vertical else "No"
+
+        # Story-cut mode = keep only stitched segments, drop the source.
+        # Both the courtroom long-video and the movie niche use it. The movie
+        # niche additionally mutes the original audio (narration-only recap).
+        _is_movies = (self._cc_selected_slug() == "case_commentary_movies")
+        story_cut_flag = "Yes" if self._cc_selected_slug() in (
+            "case_commentary_longvideo", "case_commentary_movies") else "No"
+        mute_original_flag = "Yes" if _is_movies else "No"
 
         path = filedialog.asksaveasfilename(
             title="Save Case Commentary to Excel",
@@ -3394,6 +3644,34 @@ class Dashboard:
                 # the frame itself from the video if needed.
                 print(f"[thumbnail] frame extract failed: {_te}")
 
+        # ── Thumbnail styling prompt: recreate the ORIGINAL cover, better ──
+        # Only when the source has a proper published thumbnail; otherwise
+        # these stay empty and Tool 2 uses its frame-grab + text settings.
+        thumb_prompt = ""
+        thumb_ref = ""
+        try:
+            from core.script_generator import ScriptGenerator as _SG
+            _api_keys = getattr(self, '_saved_api_keys', [])
+            _sa_path = self.sa_path_var.get().strip()
+            _gen = None
+            if _sa_path and not _api_keys:
+                _gen = _SG(service_account_path=_sa_path)
+            elif _api_keys:
+                _gen = _SG(api_keys=_api_keys)
+            if _gen is not None:
+                # Reconstruct a YouTube URL from the video ID so
+                # fetch_original_thumbnail can download the cover even
+                # when the user uploaded a local file (not a YouTube URL).
+                _thumb_url = url
+                if video_id and re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+                    if not re.search(r'(?:v=|youtu\.be/|shorts/)' + re.escape(video_id), url):
+                        _thumb_url = f"https://www.youtube.com/watch?v={video_id}"
+                thumb_prompt, thumb_ref = self._cc_build_thumbnail_prompt(
+                    _gen, _thumb_url, video_id, path,
+                    title=title, niche=niche, lang=lang, vertical=_vertical)
+        except Exception as _tpe:
+            print(f"[thumbnail] prompt build failed: {_tpe}")
+
         rows = [{
             "Video ID": video_id,
             "Title": title,
@@ -3406,9 +3684,14 @@ class Dashboard:
             "Montage Clips": clips_ref,
             "Commentary Spots": commentary_ref,
             "Vertical Format": vertical_flag,
+            "Aspect Ratio": _aspect,
+            "Story Cut": story_cut_flag,
+            "Mute Original": mute_original_flag,
             "Thumbnail Time": thumb_ts,
             "Thumbnail Text": thumb_text,
             "Thumbnail Frame": thumb_frame_path,
+            "Thumbnail Prompt": thumb_prompt,
+            "Thumbnail Ref": thumb_ref,
             "Voiceover Style": self._cc_last_result.get("voiceover_style", ""),
             "Voiceover Speed (WPM)": self._cc_last_result.get("voiceover_speed", 0),
             "Hashtag 1": "",
@@ -4636,6 +4919,7 @@ class Dashboard:
         "heartwarming",
         "cctv_surveillance",
 		"ocean_mysteries",
+        "funny_compilations",
     ]
 
     # Per-preset help: shown in the "About this preset" panel.
@@ -4727,6 +5011,18 @@ class Dashboard:
             "what happens (action) + what it means (moral/lesson).\n"
             "EXAMPLE: \"A cargo ship vanishes behind a wave the size of a building. | [observe]\" → "
             "\"The ocean does not care how confident you were before you left the shore. | [lesson]\""
+        ),
+        "funny_compilations": (
+            "WHEN: Funny fails/bloopers compilations — many short (~4s) clips of "
+            "fails, pranks, animal chaos, silly moments.\n"
+            "DOES: Opens with a warm 15-20s welcome + a light 'just for entertainment' "
+            "disclaimer, then drops ONE short funny reaction per clip timed to the joke "
+            "('oh come on!', 'what a shot!', a 'hahaha' only when earned) — reacts, "
+            "never describes.\n"
+            "EXAMPLE: \"00:00 | Welcome to the fun world — let's forget our stress and "
+            "enjoy the funniest clips around the world. Quick note, this is all just for "
+            "fun to refresh your mind. | [intro]\" → \"00:18 | Ohh, what a shot! | [react]\" → "
+            "\"00:23 | Hahaha, don't do that again, baby! | [react]\""
         ),
     }
 

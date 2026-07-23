@@ -211,7 +211,40 @@ class VideoDownloader:
         # Use bv*+ba (best video with any codec + best audio) with format_sort
         # to cap resolution at the user's choice. format_sort is more reliable
         # than the complex format+fallback chains.
-        fmt = f'bv*[height<={max_h}]+ba/b[height<={max_h}]/bv*+ba/b'
+        #
+        # Every fallback branch REQUIRES audio ([acodec!=none]) so we never end
+        # up with a silent, video-only file. TikTok in particular serves HEVC
+        # video-only tracks that score "best" on quality; without the audio
+        # guard, `bv*` grabs the silent HEVC stream and the merge leaves the
+        # file with no sound. The `[acodec!=none]` combined-format fallbacks
+        # force yt-dlp back onto the muxed H.264 stream that includes audio.
+        is_tiktok = 'tiktok.com' in yt_url
+        if is_tiktok:
+            # TikTok serves two codec families for the SAME video:
+            #   • h264  (H.264/AVC)  — carries real AAC audio  ✅
+            #   • bytevc1 (H.265/HEVC) — SILENT, but its manifest still
+            #     falsely advertises acodec=aac, so an [acodec!=none] guard
+            #     does NOT filter it out.  (Verified by probing raw streams.)
+            # The HEVC track is higher resolution so it scores "best" and gets
+            # picked, producing a silent file. We therefore select by VIDEO
+            # codec — prefer h264 — instead of trusting the audio field.
+            # 540p-with-sound beats 720p-silent for this tool's purposes.
+            fmt = (
+                'b[vcodec^=h264]/'        # best muxed H.264 (has real audio)
+                'bv*[vcodec^=h264]+ba/'   # H.264 video + separate audio
+                'b[vcodec^=avc]/'         # some builds label it avc1
+                'bv*[vcodec^=avc]+ba/'
+                'b'                       # last resort (may be silent HEVC)
+            )
+        else:
+            fmt = (
+                f'bv*[height<={max_h}]+ba/'
+                f'b[height<={max_h}][acodec!=none]/'
+                f'bv*+ba/'
+                f'b[acodec!=none]/'
+                f'b[height<={max_h}]/'
+                f'b'
+            )
         print(f"   Format: {fmt} (target: {label})")
 
         ydl_opts = {

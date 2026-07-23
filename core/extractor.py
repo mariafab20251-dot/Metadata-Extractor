@@ -434,7 +434,36 @@ class MediaExtractor:
             if clip:
                 clip.close()
 
+    def _has_audio_stream(self, video_path):
+        """Return True if the file contains at least one audio stream.
+
+        Many TikTok/short-form videos are exported with NO audio track. Whisper
+        runs ffmpeg to pull a 16kHz audio stream and, when there is none, ffmpeg
+        fails with "Output file does not contain any stream" — which otherwise
+        crashes the whole video. Probing first lets us skip transcription
+        cleanly instead. Returns True on probe failure (assume audio, let
+        Whisper try) so we never skip a video just because ffprobe hiccuped.
+        """
+        import subprocess, json as _json
+        try:
+            res = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index", "-of", "json", str(video_path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if res.returncode != 0:
+                return True  # probe failed — don't block, let Whisper try
+            streams = _json.loads(res.stdout or "{}").get("streams", [])
+            return len(streams) > 0
+        except Exception:
+            return True  # any error — assume audio present, let Whisper try
+
     def extract_speech(self, video_path):
+        # Skip audio-less videos (common on TikTok) — Whisper's ffmpeg step
+        # would otherwise error out and fail the entire video.
+        if not self._has_audio_stream(video_path):
+            return ""
+
         self.load_whisper()
 
         result = self.whisper_model.transcribe(video_path)

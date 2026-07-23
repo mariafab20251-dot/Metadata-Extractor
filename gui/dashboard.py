@@ -2987,8 +2987,13 @@ class Dashboard:
                 status("📥 Downloading video...")
                 local_path = gen._resolve_video(url, file_path)
                 if isinstance(local_path, dict) and "error" in local_path:
-                    self.root.after(0, lambda: self.cc_status_label.config(
-                        text=f"❌ {local_path.get('error', 'Download failed')}", fg="red"))
+                    err = local_path.get('error', 'Download failed')
+                    print(f"[CASE COMMENTARY] Download error: {err}")
+                    self.root.after(0, lambda e=err: (
+                        self.log(f"❌ CASE COMMENTARY — Download failed: {e}"),
+                        self.cc_status_label.config(text=f"❌ {e}", fg="red"),
+                        self.notebook.select(self.log_tab),
+                    ))
                     return
                 # Remember the resolved local file so the Excel export can grab
                 # the Gemini-chosen thumbnail frame from it.
@@ -3006,15 +3011,16 @@ class Dashboard:
                     if probe.returncode == 0:
                         data = json.loads(probe.stdout)
                         video_duration = float(data.get('format', {}).get('duration', 0))
-                except Exception:
-                    pass
+                except Exception as _dur_err:
+                    self.log(f"[cc_duration] ffprobe failed: {_dur_err}")
+                    import traceback; self.log(traceback.format_exc())
 
                 # 2. Upload to Gemini File API (session-cached — URIs last ~48h)
                 _cache_key = None
                 try:
                     _cache_key = str(Path(local_path).resolve())
-                except Exception:
-                    pass
+                except Exception as _ck_err:
+                    self.log(f"[cc_cache] resolve failed: {_ck_err}")
                 _cached = getattr(self, '_cc_upload_cache', {})
                 if _cache_key and _cache_key in _cached:
                     upload = _cached[_cache_key]
@@ -3026,8 +3032,13 @@ class Dashboard:
                         _cached[_cache_key] = upload
                         self._cc_upload_cache = _cached
                 if "error" in upload:
-                    self.root.after(0, lambda: self.cc_status_label.config(
-                        text=f"❌ Upload failed: {upload.get('error')}", fg="red"))
+                    err = upload.get('error')
+                    print(f"[CASE COMMENTARY] Upload error: {err}")
+                    self.root.after(0, lambda e=err: (
+                        self.log(f"❌ CASE COMMENTARY — Upload failed: {e}"),
+                        self.cc_status_label.config(text=f"❌ Upload failed: {e}", fg="red"),
+                        self.notebook.select(self.log_tab),
+                    ))
                     return
 
                 # 3. Build the case commentary prompt (selected niche)
@@ -3145,14 +3156,23 @@ class Dashboard:
                                                      progress_callback=lambda m: status(m),
                                                      video_duration=video_duration)
                 if "error" in result:
-                    self.root.after(0, lambda: self.cc_status_label.config(
-                        text=f"❌ Gemini error: {result.get('error')}", fg="red"))
+                    err = result.get('error')
+                    print(f"[CASE COMMENTARY] Gemini error: {err}")
+                    self.root.after(0, lambda e=err: (
+                        self.log(f"❌ CASE COMMENTARY — Gemini error: {e}"),
+                        self.cc_status_label.config(text=f"❌ Gemini error: {e}", fg="red"),
+                        self.notebook.select(self.log_tab),
+                    ))
                     return
 
                 response_text = result.get("text", "").strip()
                 if not response_text:
-                    self.root.after(0, lambda: self.cc_status_label.config(
-                        text="❌ Empty response from Gemini.", fg="red"))
+                    print("[CASE COMMENTARY] Empty response from Gemini.")
+                    self.root.after(0, lambda: (
+                        self.log("❌ CASE COMMENTARY — Empty response from Gemini (no text returned)."),
+                        self.cc_status_label.config(text="❌ Empty response from Gemini.", fg="red"),
+                        self.notebook.select(self.log_tab),
+                    ))
                     return
 
                 # 5. Parse the structured response
@@ -3169,9 +3189,15 @@ class Dashboard:
 
             except Exception as e:
                 import traceback
-                traceback.print_exc()
-                self.root.after(0, lambda: self.cc_status_label.config(
-                    text=f"❌ Error: {str(e)}", fg="red"))
+                tb = traceback.format_exc()
+                print(tb)  # also keep console output
+                # Log the full traceback to the Activity Log tab
+                self.root.after(0, lambda msg=str(e), trace=tb: (
+                    self.log(f"❌ CASE COMMENTARY ERROR: {msg}"),
+                    self.log(f"📋 TRACEBACK:\n{trace}"),
+                    self.cc_status_label.config(text=f"❌ Error: {msg}", fg="red"),
+                    self.notebook.select(self.log_tab)  # switch to log tab
+                ))
 
         threading.Thread(target=task, daemon=True).start()
 

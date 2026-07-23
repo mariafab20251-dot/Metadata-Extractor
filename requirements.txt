@@ -1,5 +1,5 @@
 # Core dependencies
-yt-dlp>=2023.12.30
+yt-dlp>=2026.07.04
 openai-whisper>=20231117
 easyocr>=1.7.0
 Pillow>=10.0.0

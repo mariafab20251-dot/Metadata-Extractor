@@ -569,6 +569,8 @@ class VideoProcessor:
                 if need_speech:
                     log_callback(f"🎤 Transcribing speech...")
                     speech_text = self.extractor.extract_speech(video_path)
+                    if not speech_text:
+                        log_callback("   ℹ️ No speech transcribed (video has no audio track or no spoken words).")
 
                 # Also download audio if requested
                 if download_audio:
@@ -634,6 +636,8 @@ class VideoProcessor:
 
             log_callback(f"🎤 Transcribing speech...")
             speech_text = self.extractor.extract_speech(video_path)
+            if not speech_text:
+                log_callback("   ℹ️ No speech transcribed (video has no audio track or no spoken words).")
 
             self.exporter.save_results(
                 video_id, video_path, "local", overlay_text,

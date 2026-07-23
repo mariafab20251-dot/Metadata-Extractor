@@ -931,10 +931,17 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 except Exception as e:
                     last_error = str(e)
                     err_lower = last_error.lower()
-                    # Retry on quota, connection, or timeout errors
+                    # Retry on quota, connection, timeout errors AND on a
+                    # blocked / permission-denied key (403). A single key that
+                    # Google has blocked from the File API must NOT abort the
+                    # whole upload — rotate to the next key, which may be fine.
                     if any(x in last_error or x in err_lower
                            for x in ["429", "quota", "resource_exhausted",
-                                     "timeout", "connection", "abort"]):
+                                     "timeout", "connection", "abort",
+                                     "403", "permission_denied",
+                                     "api_key_service_blocked", "blocked",
+                                     "api key not valid", "invalid api key",
+                                     "400", "permission denied"]):
                         if progress_callback:
                             progress_callback(f"🔄 Key failed ({last_error[:60]}), trying next...")
                         continue
@@ -1573,9 +1580,28 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                         error_detail = response.text[:500]
 
                     status = response.status_code
-                    is_quota = (status == 429 and ("quota" in error_detail.lower()
+                    detail_lower = error_detail.lower()
+                    is_quota = (status == 429 and ("quota" in detail_lower
                                 or "RESOURCE_EXHAUSTED" in error_detail))
-                    if is_quota:
+                    # A 403 (PERMISSION_DENIED / API_KEY_SERVICE_BLOCKED) or a
+                    # 400 "API key not valid" means THIS key is bad, not that the
+                    # request is bad. Mark it exhausted and rotate to the next key
+                    # instead of aborting — otherwise one blocked key kills the
+                    # whole request even when other keys work.
+                    is_bad_key = (
+                        status == 403
+                        or "permission_denied" in detail_lower
+                        or "api_key_service_blocked" in detail_lower
+                        or "are blocked" in detail_lower
+                        or "api key not valid" in detail_lower
+                        or "invalid api key" in detail_lower
+                    )
+                    if is_quota or is_bad_key:
+                        if progress_callback:
+                            progress_callback(
+                                f"🔄 Key #{self._current_key_index + 1} failed "
+                                f"(HTTP {status}), trying next key..."
+                            )
                         self._mark_current_key_exhausted()
                         continue
 
@@ -1660,9 +1686,23 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                         error_detail = response.text[:500]
 
                     status = response.status_code
-                    is_quota = (status == 429 and ("quota" in error_detail.lower()
+                    detail_lower = error_detail.lower()
+                    is_quota = (status == 429 and ("quota" in detail_lower
                                 or "RESOURCE_EXHAUSTED" in error_detail))
-                    if is_quota:
+                    is_bad_key = (
+                        status == 403
+                        or "permission_denied" in detail_lower
+                        or "api_key_service_blocked" in detail_lower
+                        or "are blocked" in detail_lower
+                        or "api key not valid" in detail_lower
+                        or "invalid api key" in detail_lower
+                    )
+                    if is_quota or is_bad_key:
+                        if progress_callback:
+                            progress_callback(
+                                f"🔄 Key #{self._current_key_index + 1} failed "
+                                f"(HTTP {status}), trying next key..."
+                            )
                         self._mark_current_key_exhausted()
                         continue
 
@@ -1864,7 +1904,16 @@ Return ONLY valid JSON in this exact format (no markdown, no code fences, no exp
                 is_quota = (response.status_code == 429
                             and ("quota" in detail.lower()
                                  or "RESOURCE_EXHAUSTED" in detail))
-                if is_quota:
+                detail_lower = detail.lower()
+                is_bad_key = (
+                    response.status_code == 403
+                    or "permission_denied" in detail_lower
+                    or "api_key_service_blocked" in detail_lower
+                    or "are blocked" in detail_lower
+                    or "api key not valid" in detail_lower
+                    or "invalid api key" in detail_lower
+                )
+                if is_quota or is_bad_key:
                     self._mark_current_key_exhausted()
                     break  # next key
                 if response.status_code == 404 or "not found" in detail.lower():

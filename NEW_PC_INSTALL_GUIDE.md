@@ -85,6 +85,16 @@ This will:
 
 If it finishes with `OK: all core packages imported` you're good.
 
+**Offline install (no internet on the new PC):**
+Before copying the folder to the new PC, run this ONCE on the source machine:
+```
+setup\download_offline_packages.bat
+```
+This saves all wheels into `setup\offline_wheels\` (~364 MB). Then when
+you copy the whole folder to the new PC, the install batch will detect
+them and install with **zero internet needed**. If the wheels aren't
+present, it falls back to normal online install (longer timeouts now).
+
 ## Step 5 — Gemini credentials (THE step people skip)
 
 The **Case Commentary** and **Script Studio** tabs call Google Gemini.

@@ -1,5 +1,14 @@
 # VideoTextExtractor — Setup Guide
 
+> ⚠️ **This guide is kept for reference.** The comprehensive up-to-date
+> install guide is **[`NEW_PC_INSTALL_GUIDE.md`](../NEW_PC_INSTALL_GUIDE.md)**
+> (in the project root folder). It covers everything in this guide plus
+> copy-folder vs git clone, Gemini credentials, git pull updates, and
+> troubleshooting the AI tabs. Start there.
+>
+> If you were linked directly here, go back one level and open
+> `NEW_PC_INSTALL_GUIDE.md` instead.
+
 This guide walks you through installing everything needed to run the VideoTextExtractor on a **new PC**.
 
 ---

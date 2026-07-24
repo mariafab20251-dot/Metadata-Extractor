@@ -5,6 +5,12 @@ It also explains **why the Case Commentary and Script Studio tabs throw
 "google gemini" errors** after a fresh install, and how the fixed install
 batch now prevents that.
 
+> **Other guides in this folder:**
+> - [`GIT_UPDATE_GUIDE.md`](GIT_UPDATE_GUIDE.md) — detailed git pull / auth /
+>   merge-conflict reference (this guide covers the essentials too)
+> - [`setup/SETUP_GUIDE.md`](setup/SETUP_GUIDE.md) — older guide (replaced by
+>   this one; kept for reference)
+
 ---
 ## ⚡ TL;DR (the 6 steps)
 
@@ -27,6 +33,12 @@ batch now prevents that.
   python --version
   ```
   Should print `Python 3.11.x` or higher.
+
+### Visual C++ Redistributable (required by PyTorch)
+
+If PyTorch install fails with a "VC++ runtime" error, install:
+- https://aka.ms/vs/17/release/vc_redist.x64.exe
+- Run the installer, restart your PC if prompted.
 
 ## Step 2 — Install FFmpeg (needed for downloads + audio)
 
@@ -101,6 +113,62 @@ Double-click:
 run.bat
 ```
 (If it says "First-time setup required", you skipped Step 4.)
+
+---
+## 🔄 Keeping Updated (git pull)
+
+The portable folder is a git repository. To get the latest code + fixes:
+
+1. Open **Command Prompt** inside the `VideoTextExtractor_PORTABLE` folder
+2. Run:
+   ```
+   git pull
+   ```
+   (If git asks for a username/password, see "Git authentication" below.)
+
+After pulling, re-run `setup\install_dependencies.bat` if any packages
+changed (the batch will upgrade them fast — it skips what's already
+installed).
+
+### Git authentication (for private repo)
+
+If the repo is private, `git pull` will prompt for login. Use a **Personal
+Access Token (PAT)** — not your GitHub password:
+
+1. Go to: https://github.com/settings/tokens → **Generate new token (classic)**
+2. Check the `repo` scope (full control of private repos)
+3. Copy the token (looks like: `ghp_xxxxxxxxxxxxxxxxxxxx`)
+4. When git asks for a password, **paste the token**
+
+To avoid logging in every time, run this ONCE:
+```
+git config credential.helper store
+```
+
+### Merge conflicts (rare)
+
+If you modified a file that also changed on GitHub:
+```
+git stash        # put your changes aside
+git pull         # get the update
+git stash pop    # restore your changes
+```
+If that also conflicts, just re-copy the portable folder fresh — it's
+often faster than resolving conflicts manually.
+
+### What's safe to update
+
+| In git (updates on `git pull`) | Not in git (your local data — NEVER touched) |
+|---|---|
+| `core/` — all Python scripts | `data/` — downloads, DB, Excel reports, cookies, Gemini credentials |
+| `gui/` — dashboard UI | `channels/` — downloaded channel videos |
+| `platforms/` — scraper modules | `venv/` — Python venv (recreate via install batch) |
+| `setup/` — installer batch | `*.mp4`, `*.mp3`, `*.wav` — media files |
+| `main.py`, `config.py`, `run.bat` | `__pycache__/` |
+| `*.md` — all guides | `cookies.txt` |
+
+So `git pull` is safe — it will never delete your downloads, DB,
+cookies, or Excel reports.
 
 ---
 ## ❓ Why the AI tabs threw "google gemini" errors on the new PC

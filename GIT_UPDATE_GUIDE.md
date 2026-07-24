@@ -1,5 +1,10 @@
 # 📦 Git Update Guide — VideoTextExtractor
 
+> ⚠️ **First-time setup?** Use **[`NEW_PC_INSTALL_GUIDE.md`](NEW_PC_INSTALL_GUIDE.md)**
+> instead — it covers Python/FFmpeg install, first clone, Gemini credentials,
+> and the first run. Come back here for git-specific details (auth, merge
+> conflicts, credential caching).
+
 This guide explains how to get the latest code updates using Git,
 whether you copied the portable folder to a new PC or are starting
 from scratch.

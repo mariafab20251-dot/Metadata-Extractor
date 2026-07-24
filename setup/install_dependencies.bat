@@ -18,14 +18,14 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-:: Check Python version
-python --version 2>&1 | findstr /R "3\.1[1-9]\|3\.[2-9][0-9]\|[4-9]\." >nul
-if %ERRORLEVEL% NEQ 0 (
+:: Check Python version — must be 3.11 or higher
+python -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+if not %ERRORLEVEL% EQU 0 (
+    echo.
     echo [WARNING] Python 3.11+ recommended. You have:
     python --version
-    echo.
-    echo           Some packages may not work on older Python versions.
     echo           Consider upgrading if you run into issues.
+    echo.
 )
 
 :: Detect FFmpeg
@@ -70,24 +70,61 @@ echo         Pip version:
 call "%VENV_DIR%\Scripts\pip.exe" --version
 echo.
 
+:: ── Detect offline wheelhouse (portable copy, no internet needed) ──
+set OFFLINE_DIR=setup\offline_wheels
+set PIP_OFFLINE=
+dir "%OFFLINE_DIR%\*.whl" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo ✅ Found offline wheelhouse: %OFFLINE_DIR%
+    echo    Will install without internet.
+    set PIP_OFFLINE=--no-index --find-links %OFFLINE_DIR%
+) else (
+    echo ℹ️  No offline wheelhouse found. Will download from internet.
+    echo    (For offline install, run setup\download_offline_packages.bat
+    echo     on the machine that has internet, then copy the folder.)
+)
+echo.
+
 :: ── Step 3: Install PyTorch (CPU-compatible) ──
 echo [3/4] Installing PyTorch (CPU-compatible version)...
-echo         This may take several minutes (download size ~200 MB)...
-echo.
-call "%VENV_DIR%\Scripts\pip.exe" install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu -q
+if defined PIP_OFFLINE (
+    echo         Using offline wheels (no internet needed)...
+    call "%VENV_DIR%\Scripts\pip.exe" install !PIP_OFFLINE! torch torchvision torchaudio -q
+) else (
+    echo         This may take several minutes (download size ~200 MB)...
+    call "%VENV_DIR%\Scripts\pip.exe" install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --timeout 120 --retries 5 -q
+)
 if !ERRORLEVEL! NEQ 0 (
-    echo [WARNING] PyTorch CPU install had issues, trying PyPI fallback...
-    call "%VENV_DIR%\Scripts\pip.exe" install torch -q
+    echo [WARNING] PyTorch install had issues, trying fallback...
+    if defined PIP_OFFLINE (
+        call "%VENV_DIR%\Scripts\pip.exe" install !PIP_OFFLINE! torch -q
+    ) else (
+        call "%VENV_DIR%\Scripts\pip.exe" install torch --timeout 120 -q
+    )
 )
 echo.
 
 :: ── Step 4: Install remaining dependencies ──
-echo [4/4] Installing remaining dependencies (%VENV_DIR%)...
-echo.
-call "%VENV_DIR%\Scripts\pip.exe" install yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai google-auth google-auth-httplib2 curl_cffi -q
+echo [4/4] Installing remaining dependencies...
+if defined PIP_OFFLINE (
+    echo         Using offline wheels (no internet needed)...
+    call "%VENV_DIR%\Scripts\pip.exe" install !PIP_OFFLINE! yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai google-auth google-auth-httplib2 curl_cffi -q
+) else (
+    echo         Downloading from internet (may take several minutes)...
+    call "%VENV_DIR%\Scripts\pip.exe" install yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai google-auth google-auth-httplib2 curl_cffi --timeout 120 --retries 5 -q
+)
 if !ERRORLEVEL! NEQ 0 (
     echo [ERROR] Failed to install some dependencies.
-    echo         Check your internet connection and try again.
+    echo.
+    if not defined PIP_OFFLINE (
+        echo         Check your internet connection and try again.
+        echo         Or run setup\download_offline_packages.bat on a machine
+        echo         with internet, then copy the folder and re-run this batch.
+    ) else (
+        echo         The offline wheelhouse may be incomplete or corrupt.
+        echo         Try deleting setup\offline_wheels and re-running
+        echo         setup\download_offline_packages.bat on the source machine.
+    )
     pause
     exit /b 1
 )

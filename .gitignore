@@ -45,6 +45,9 @@ debug_xiaohongshu.html
 debug_xiaohongshu.json
 debug_selenium.html
 
+# Offline wheelhouse (portable copy only — run setup/download_offline_packages.bat to create)
+setup/offline_wheels/
+
 # Junk / temp files
 *.zip
 "New Text Document.txt"

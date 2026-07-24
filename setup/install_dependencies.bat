@@ -71,13 +71,11 @@ call "%VENV_DIR%\Scripts\pip.exe" --version
 echo.
 
 :: ── Detect offline wheelhouse (portable copy, no internet needed) ──
-set OFFLINE_DIR=setup\offline_wheels
-set PIP_OFFLINE=
-dir "%OFFLINE_DIR%\*.whl" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    echo ✅ Found offline wheelhouse: %OFFLINE_DIR%
+set OFFLINE_MODE=0
+if exist "setup\offline_wheels\*.whl" set OFFLINE_MODE=1
+if !OFFLINE_MODE! EQU 1 (
+    echo ✅ Found offline wheelhouse: setup\offline_wheels
     echo    Will install without internet.
-    set PIP_OFFLINE=--no-index --find-links %OFFLINE_DIR%
 ) else (
     echo ℹ️  No offline wheelhouse found. Will download from internet.
     echo    (For offline install, run setup\download_offline_packages.bat
@@ -87,17 +85,17 @@ echo.
 
 :: ── Step 3: Install PyTorch (CPU-compatible) ──
 echo [3/4] Installing PyTorch (CPU-compatible version)...
-if defined PIP_OFFLINE (
+if !OFFLINE_MODE! EQU 1 (
     echo         Using offline wheels (no internet needed)...
-    call "%VENV_DIR%\Scripts\pip.exe" install !PIP_OFFLINE! torch torchvision torchaudio -q
+    call "%VENV_DIR%\Scripts\pip.exe" install --no-index --find-links setup\offline_wheels torch torchvision torchaudio -q
 ) else (
     echo         This may take several minutes (download size ~200 MB)...
     call "%VENV_DIR%\Scripts\pip.exe" install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --timeout 120 --retries 5 -q
 )
 if !ERRORLEVEL! NEQ 0 (
     echo [WARNING] PyTorch install had issues, trying fallback...
-    if defined PIP_OFFLINE (
-        call "%VENV_DIR%\Scripts\pip.exe" install !PIP_OFFLINE! torch -q
+    if !OFFLINE_MODE! EQU 1 (
+        call "%VENV_DIR%\Scripts\pip.exe" install --no-index --find-links setup\offline_wheels torch -q
     ) else (
         call "%VENV_DIR%\Scripts\pip.exe" install torch --timeout 120 -q
     )
@@ -106,9 +104,9 @@ echo.
 
 :: ── Step 4: Install remaining dependencies ──
 echo [4/4] Installing remaining dependencies...
-if defined PIP_OFFLINE (
+if !OFFLINE_MODE! EQU 1 (
     echo         Using offline wheels (no internet needed)...
-    call "%VENV_DIR%\Scripts\pip.exe" install !PIP_OFFLINE! yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai google-auth google-auth-httplib2 curl_cffi -q
+    call "%VENV_DIR%\Scripts\pip.exe" install --no-index --find-links setup\offline_wheels yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai google-auth google-auth-httplib2 curl_cffi -q
 ) else (
     echo         Downloading from internet (may take several minutes)...
     call "%VENV_DIR%\Scripts\pip.exe" install yt-dlp openai-whisper easyocr Pillow moviepy instaloader requests pandas openpyxl google-genai google-auth google-auth-httplib2 curl_cffi --timeout 120 --retries 5 -q
@@ -116,14 +114,14 @@ if defined PIP_OFFLINE (
 if !ERRORLEVEL! NEQ 0 (
     echo [ERROR] Failed to install some dependencies.
     echo.
-    if not defined PIP_OFFLINE (
-        echo         Check your internet connection and try again.
-        echo         Or run setup\download_offline_packages.bat on a machine
-        echo         with internet, then copy the folder and re-run this batch.
-    ) else (
+    if !OFFLINE_MODE! EQU 1 (
         echo         The offline wheelhouse may be incomplete or corrupt.
         echo         Try deleting setup\offline_wheels and re-running
         echo         setup\download_offline_packages.bat on the source machine.
+    ) else (
+        echo         Check your internet connection and try again.
+        echo         Or run setup\download_offline_packages.bat on a machine
+        echo         with internet, then copy the folder and re-run this batch.
     )
     pause
     exit /b 1

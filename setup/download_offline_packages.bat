@@ -80,6 +80,6 @@ echo ║  internet needed.                                 ║
 echo ╚══════════════════════════════════════════════════╝
 echo.
 echo Total wheel size:
-du -sh "%WHEEL_DIR%" 2>nul || dir /s "%WHEEL_DIR%\*.whl" 2>nul | find "File(s)"
+dir /s "%WHEEL_DIR%\*.whl" 2>nul | find "File(s)"
 echo.
 pause
